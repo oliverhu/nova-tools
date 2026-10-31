@@ -93,6 +93,21 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(400,self.request(url,'admin',resume)[0])
         self.assertEqual(200,self.request(url,'admin',{**resume,'approval_received':True})[0])
 
+    def test_worker_approval_response_uses_existing_retry_endpoint(self):
+        _,raw,_=self.request('/api/tasks',body={'request_key':'approval-resume','title':'Consent'})
+        ident=json.loads(raw)['id'];self.request('/api/worker/pulse','oliver-mini',{'capacity':{'cpus':12}})
+        _,raw,_=self.request('/api/worker/claim','oliver-mini',{})
+        claim=json.loads(raw);identity={'claim_token':claim['claim_token'],'generation':1,'step':0}
+        self.request('/api/tasks/'+ident+'/finish','oliver-mini',{**identity,'outcome':'pending_external_approval',
+            'receipt':{'summary':'Waiting for explicit consent','execution_stopped':True}})
+        body={**identity,'execution_stopped':True,'external_state_checked':True,'evidence':'User response verified',
+              'approval_received':True,'approval_evidence':'Human message123: approved and resume'}
+        url='/api/tasks/'+ident+'/retry'
+        self.assertEqual(403,self.request(url,body=body)[0])
+        self.assertEqual(409,self.request(url,'oliver-mac',body)[0])
+        code,raw,_=self.request(url,'oliver-mini',body)
+        self.assertEqual(200,code);self.assertEqual('queued',json.loads(raw)['status'])
+
     def test_defer_endpoint_requires_owner_and_returns_scheduling(self):
         _,body,_=self.request('/api/tasks',body={'request_key':'waiting-http','title':'Wait'})
         ident=json.loads(body)['id']

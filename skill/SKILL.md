@@ -45,6 +45,23 @@ after a concrete correction and proof of `execution_stopped`,
 publication or input outcome; inspect external state first. Old claims are fenced.
 Administrator reconciliation remains available for abandoned legacy tasks.
 
+When the human actually responds to an approval request, verify the response and
+external state, then use `retry ID --receipt /path.json` with the existing owning
+claim, `approval_received: true`, `approval_evidence` identifying the original
+human message and decision, `execution_stopped: true`, `external_state_checked:
+true`, and `evidence`. This explicitly returns settled work to the queue without
+an administrator relay. It does not bypass actual system permissions or claim
+that acceptance passed. Never infer approval from a timer or unrelated message.
+
+If an artifact-location wait was misclassified as Pending External Approval,
+verify access first. An administrator can use the existing `defer` endpoint with
+current generation, stopped/checked evidence, worker/dependencies and
+`wait_correction: {"category":"artifact_access","approval_not_required":true,
+"reason":"...verified artifact and classification evidence..."}`. This audits
+a classification correction without inventing external approval. Preserve real
+human stops, all acceptance requirements, receipts and attempt history.
+
+
 When the only blocker is waiting for another worker or prerequisite, use
 `wait ID --receipt /path.json` instead of marking the task blocked. The receipt
 contains `execution_stopped: true`, `external_state_checked: true`, `evidence`,
@@ -140,3 +157,24 @@ settles, immediately check `next` once in the same run. If no eligible work is
 available, stop quietly until the next wake. Do not create per-task schedules.
 The capacity reporter does not run models or execute tasks by itself.
 Notify only completion, material failure, or a specific required human action.
+
+## Reference artifacts from oliver-mac
+
+On Mini, use the persistent `nova-artifacts-mac` SSH alias for recordings in the
+Mac intake root `/Users/oliverhu/Documents/ChatGPT/exports/nova-task-intake`.
+It uses a dedicated local key, a verified host-key pin and fresh BatchMode
+authentication without SSH-agent or ControlMaster dependence. The Mac permits
+only this read-only contract; do not use arbitrary shell commands or SCP:
+
+- `ssh nova-artifacts-mac ping`: connection/allowed-root JSON.
+- `ssh nova-artifacts-mac stat 'RELATIVE/PATH'`: size and SHA256 JSON.
+- `ssh nova-artifacts-mac fetch 'RELATIVE/PATH'`: raw file bytes.
+
+Fetch into a private staging file, verify the task's expected byte count/SHA256,
+then rename without overwriting an unrelated artifact. Use the relative intake
+path from the task, e.g.
+`20261031/download-experience/download-experience-reference.mov`. Never print or
+transfer the private key, disable host-key checking, depend on an expired control
+socket, or retry password prompts. Failed access is an artifact scheduling/repair
+issue unless a real human consent decision is outstanding. Preserve active claims
+and original reference acceptance.

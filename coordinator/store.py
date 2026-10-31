@@ -190,6 +190,8 @@ class Store:
         task['reassignment_limit'] = REASSIGNMENT_LIMIT
         task['execution_policy'] += (
             ' For external approval waits, finish with outcome pending_external_approval; never retry or resubmit approval requests automatically. '
+            'After a verified human approval response, the last owning worker may explicitly retry with approval_received=true, approval_evidence naming the response, and settled execution/external-state evidence. '
+            'Artifact-location waits are scheduling waits; an administrator may correct a mistaken approval classification through defer with an audited wait_correction. '
             'Settled blocked tasks retry after 15 minutes, up to 10 fix attempts per host assignment. '
             'An actual claim by a different host resets fix_attempts_used to zero and consumes one of at most 6 lifetime host reassignments. '
             'Same-host retries do not reset the count; the initial assignment is not a reassignment. '
@@ -406,7 +408,20 @@ class Store:
             raise Invalid('Waiting requires settled execution and checked external state')
         with self.transaction() as db:
             row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
-            if not row or row['status'] not in ('queued', 'running', 'blocked', 'failed'):
+            correction = body.get('wait_correction')
+            correcting_approval = row and row['status'] == 'pending_external_approval'
+            if correcting_approval:
+                if actor != 'admin':
+                    raise Conflict('Only administrators may correct an approval classification')
+                if (not isinstance(correction,dict) or correction.get('category') != 'artifact_access'
+                        or correction.get('approval_not_required') is not True):
+                    raise Invalid('Explicit artifact-access classification and approval_not_required evidence are required')
+                bounded(correction.get('reason'), 'wait_correction.reason', 12000)
+                if json.loads(row['result']).get('human_stop') is True:
+                    raise Conflict('A recorded human stop cannot be reclassified as an artifact wait')
+            elif correction is not None:
+                raise Conflict('Wait correction applies only to a pending external approval')
+            if not row or (not correcting_approval and row['status'] not in ('queued', 'running', 'blocked', 'failed')):
                 raise Conflict('Only settled work can return to the waiting queue')
             if body.get('generation') != row['generation']:
                 raise Conflict('Task generation changed; reload before scheduling')
@@ -446,6 +461,10 @@ class Store:
             db.execute("UPDATE tasks SET status='queued',requirements=?,dependencies=?,last_owner=COALESCE(owner,last_owner),owner=NULL,claim_hash=NULL,lease_until=NULL,progress=?,updated=? WHERE id=?",
                        (encoded(req),encoded(list(dict.fromkeys(deps))),evidence,self.clock(),ident))
             self.event(db, actor, 'waiting', ident, encoded({'worker':req.get('worker'),'dependencies':deps,'evidence':evidence}))
+            if correcting_approval:
+                self.event(db, actor, 'approval-classification-corrected', ident, encoded({
+                    'previous_status':'pending_external_approval','status':'queued','wait_correction':correction,
+                    'worker':req.get('worker'),'evidence':evidence}))
             task = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
             return {**self.public_task(task), **self.scheduling(db,task)}
 
@@ -605,8 +624,12 @@ class Store:
             if 'generation' in body and body['generation'] != row['generation']:
                 raise Conflict('Task generation changed; reload before reconciliation')
             if action == 'pending_external_approval' or row['status'] == 'pending_external_approval':
-                if actor != 'admin' or body.get('generation') != row['generation']:
-                    raise Conflict('Approval classification/resume requires administrator and current generation')
+                if body.get('generation') != row['generation']:
+                    raise Conflict('Approval classification/resume requires the current generation')
+                if actor != 'admin':
+                    if row['status'] != 'pending_external_approval' or action != 'retry':
+                        raise Conflict('Workers may only resume their own verified approval wait')
+                    bounded(body.get('approval_evidence'), 'approval_evidence', 4000)
                 if action in ('retry', 'complete') and body.get('approval_received') is not True:
                     raise Invalid('External approval must be verified before resuming')
             if action == 'retry' and row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
@@ -622,7 +645,10 @@ class Store:
             db.execute("DELETE FROM locks WHERE task_id=?", (ident,))
             db.execute("UPDATE tasks SET status=?,step=?,last_owner=COALESCE(owner,last_owner),owner=NULL,claim_hash=NULL,lease_until=NULL,retry_after=NULL,updated=?,progress=? WHERE id=?",
                        (status,step,self.clock(),evidence,ident))
-            self.event(db,actor,"reconciled",ident,encoded({"action":action,"evidence":evidence}))
+            detail = {"action":action,"evidence":evidence}
+            if row['status'] == 'pending_external_approval' and action in ('retry','complete'):
+                detail.update(approval_received=True, approval_evidence=body.get('approval_evidence', evidence))
+            self.event(db,actor,"reconciled",ident,encoded(detail))
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?",(ident,)).fetchone())
 
     @staticmethod

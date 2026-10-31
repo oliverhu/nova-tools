@@ -228,3 +228,20 @@ Provide `action: "cancel"`, the current `generation`, `execution_stopped: true`,
 Cancellation preserves the task, receipts and audit history. The transaction
 rejects cancellation if a worker has already claimed the task; running work
 keeps its ownership. Workers and anonymous dashboard clients cannot cancel.
+
+## Correcting approval waits
+
+An authenticated last-owning worker can explicitly resume its settled pending
+approval through `/api/tasks/ID/retry` after a verified human response. Supply the
+current claim identity, `approval_received: true`, `approval_evidence` identifying
+the human response, and the usual stopped execution/checked external state and
+evidence fields. Other workers and anonymous callers cannot resume it. Polling
+alone never supplies approval. Existing admin reconciliation remains supported.
+
+For a misclassified artifact-location wait, only an administrator may use
+`/api/tasks/ID/defer` with the current generation, verified artifact access in
+`evidence`, a destination worker and/or dependencies, and `wait_correction` with
+`category: "artifact_access"`, `approval_not_required: true`, and a nonempty
+`reason`. The audit records a classification correction, not received approval.
+A recorded `human_stop: true` cannot be cleared this way. Original receipts,
+acceptance and attempt/reassignment counts are preserved; no active task is moved.

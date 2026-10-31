@@ -219,11 +219,55 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(0,shown['fix_attempts_used']);self.assertFalse(shown['ready'])
         body=self.wait_body(old,action='retry')
         with self.assertRaises(Invalid):self.store.reconcile('admin',task['id'],body)
-        with self.assertRaises(Conflict):self.store.retry('oliver-mac',task['id'],{**body,'approval_received':True})
+        with self.assertRaises(Invalid):self.store.retry('oliver-mac',task['id'],{**body,'approval_received':True})
         resumed=self.store.reconcile('admin',task['id'],{**body,'approval_received':True})
         self.assertEqual('queued',resumed['status'])
         self.assertEqual('existing-request',resumed['result']['approval_request'])
         self.assertIsNotNone(self.store.claim('oliver-mini')['task'])
+
+    def test_own_worker_can_resume_verified_response_without_admin_relay(self):
+        task=self.add();old=self.store.claim('oliver-mini')
+        self.finish(old,'pending_external_approval',fix_attempts_used=2,branch='candidate')
+        body=self.wait_body(old,approval_received=True,approval_evidence='Human message abc: Bluetooth approved; resume task')
+        with self.assertRaises(Conflict):self.store.retry('oliver-mac',task['id'],body)
+        with self.assertRaises(Invalid):self.store.retry('oliver-mini',task['id'],{**body,'approval_received':False})
+        resumed=self.store.retry('oliver-mini',task['id'],body)
+        self.assertEqual('queued',resumed['status']);self.assertEqual(2,resumed['fix_attempts_used'])
+        self.assertEqual('candidate',resumed['result']['branch'])
+        evidence=json.loads(self.store.detail(task['id'])['events'][-1]['detail'])
+        self.assertTrue(evidence['approval_received']);self.assertEqual(body['approval_evidence'],evidence['approval_evidence'])
+        with self.assertRaises(Conflict):self.store.retry('oliver-mini',task['id'],body)
+
+    def test_admin_corrects_artifact_wait_without_claiming_external_approval(self):
+        task=self.add();old=self.store.claim('oliver-mini')
+        self.finish(old,'pending_external_approval',branch='source-review',fix_attempts_used=2)
+        untouched=self.add('actual-apple-approval');other=self.store.claim('oliver-mac',untouched['id'])
+        self.finish(other,'pending_external_approval',approval_request='Apple-request')
+        before=self.store.detail(task['id'])
+        body=self.wait_body(old,worker='oliver-mini',wait_correction={
+            'category':'artifact_access','approval_not_required':True,'reason':'Exact reference checksum verified locally; no external consent was requested'})
+        with self.assertRaises(Conflict):self.store.defer('oliver-mini',task['id'],body)
+        with self.assertRaises(Invalid):self.store.defer('admin',task['id'],{**body,'wait_correction':None})
+        with self.assertRaises(Conflict):self.store.defer('admin',task['id'],{**body,'generation':0})
+        result=self.store.defer('admin',task['id'],body)
+        after=self.store.detail(task['id'])
+        self.assertEqual('queued',result['status']);self.assertEqual('oliver-mini',result['next_worker'])
+        self.assertEqual(before['receipts'],after['receipts']);self.assertEqual(before['result'],after['result'])
+        for field in ('fix_attempts_used','total_fix_attempts','reassignment_count','generation'):
+            self.assertEqual(before[field],after[field])
+        event=after['events'][-1];self.assertEqual('approval-classification-corrected',event['kind'])
+        self.assertNotIn('approval_received',json.loads(event['detail']))
+        self.assertEqual('pending_external_approval',self.store.detail(untouched['id'])['status'])
+        self.assertIsNotNone(self.store.claim('oliver-mini',task['id'])['task'])
+
+    def test_wait_correction_cannot_clear_human_stop_or_active_work(self):
+        task=self.add();old=self.store.claim('oliver-mini')
+        body=self.wait_body(old,worker='oliver-mac',wait_correction={
+            'category':'artifact_access','approval_not_required':True,'reason':'Reference copied'})
+        with self.assertRaises(Conflict):self.store.defer('admin',task['id'],body)
+        self.finish(old,'pending_external_approval',human_stop=True)
+        with self.assertRaises(Conflict):self.store.defer('admin',task['id'],body)
+        self.assertEqual('pending_external_approval',self.store.detail(task['id'])['status'])
 
     def test_classify_external_approval_preserves_history_and_fences_claims(self):
         task=self.add();old=self.store.claim('oliver-mac')
