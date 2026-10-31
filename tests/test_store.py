@@ -171,6 +171,21 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(Invalid):self.add('direct',steps=[{'name':'Ship','kind':'publish','instructions':'Publish'}])
         with self.assertRaises(Invalid):self.add('fake',task_type='publish')
 
+    def test_explicit_release_starts_now_and_hourly_tick_does_not_duplicate(self):
+        self.configure();self.observe()
+        self.assertEqual([],self.store.tick_releases())
+        ids=self.store.tick_releases('oliverhu/nova-browser');self.assertEqual(1,len(ids))
+        t=self.store.detail(ids[0]);self.assertEqual('b'*40,t['result']['release_target']['commit'])
+        self.assertEqual(90,t['priority']);self.assertIn('ios_app_store_connect_upload_only',t['delivery_targets'])
+        self.assertEqual([],self.store.tick_releases('oliverhu/nova-browser'))
+        self.now=3600;self.observe();self.assertEqual([],self.store.tick_releases())
+
+    def test_explicit_release_rejects_stale_or_unknown_repository(self):
+        with self.assertRaises(Invalid):self.store.tick_releases('unknown/repo')
+        self.configure();self.observe();self.now+=601
+        with self.assertRaises(Conflict):self.store.tick_releases('oliverhu/nova-browser')
+        self.assertEqual([],self.store.snapshot()['tasks'])
+
     def test_hourly_check_no_change_no_task(self):
         self.configure();self.now=3600;self.observe('a')
         self.assertEqual([],self.store.tick_releases())

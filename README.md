@@ -184,3 +184,8 @@ requires a verified `ios_upload` receipt (status, source commit, version/build,
 upload reference and explicit no-distribution/no-review flags). Completed past
 releases remain historical; they are not retroactively marked as iOS uploads.
 Apple upload workflow: https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds/
+
+An explicit user release request can start immediately through authenticated
+`POST /api/releases/start` with `repository`. It requires a fresh remote-main
+observation and shares hourly exact-commit deduplication; it does not replay
+blocked releases of the same commit. New explicit releases have priority 90.

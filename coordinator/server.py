@@ -105,6 +105,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            if path == '/api/releases/start':
+                if actor != 'admin':
+                    return self.respond(403, {'error':'Explicit release requests require administrator identity'})
+                repository=body.get('repository')
+                if not isinstance(repository,str) or not repository.strip():
+                    raise Invalid('repository is required')
+                return self.respond(200, {'created_ids':store.tick_releases(repository)})
             if path == "/api/repositories/configure":
                 if actor != "admin":
                     return self.respond(403, {"error": "Repository baseline requires administrator identity"})

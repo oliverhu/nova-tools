@@ -78,6 +78,16 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(200,code);self.assertEqual('queued',json.loads(raw)['status'])
         self.assertEqual('oliver-mini',json.loads(raw)['next_worker'])
 
+    def test_manual_release_requires_admin_and_repository(self):
+        for actor in (None,'oliver-mini'):
+            self.assertEqual(403,self.request('/api/releases/start',actor,{'repository':'oliverhu/nova-browser'})[0])
+        self.assertEqual(400,self.request('/api/releases/start','admin',{})[0])
+        import time
+        self.request('/api/repositories/configure','admin',{'repository':'oliverhu/nova-browser','published_commit':'a'*40})
+        self.request('/api/repositories/observe','oliver-mini',{'repository':'oliverhu/nova-browser','commit':'b'*40,'observed_at':time.time()})
+        code,body,_=self.request('/api/releases/start','admin',{'repository':'oliverhu/nova-browser'})
+        self.assertEqual(200,code);self.assertEqual(1,len(json.loads(body)['created_ids']))
+
     def test_repository_configuration_and_observations_require_identity(self):
         body={'repository':'owner/repo','published_commit':'a'*40}
         self.assertEqual(403,self.request('/api/repositories/configure','oliver-mini',body)[0])

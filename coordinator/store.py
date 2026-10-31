@@ -541,15 +541,23 @@ class Store:
             result = self._observe(db, body, observed)
             return result
 
-    def tick_releases(self):
-        """One durable hourly check; creates queue work, never publishes itself."""
+    def tick_releases(self, repository=None):
+        """Hourly or explicit release request; both share exact-target deduplication."""
+        if repository is not None:
+            repository = bounded(repository, 'repository', 200)
         with self.transaction() as db:
             now = self.clock()
             created = []
-            for repo in db.execute("SELECT * FROM repositories WHERE next_check<=?", (now,)).fetchall():
+            rows = (db.execute('SELECT * FROM repositories WHERE name=?',(repository,)).fetchall()
+                    if repository is not None else db.execute("SELECT * FROM repositories WHERE next_check<=?", (now,)).fetchall())
+            if repository is not None and not rows:
+                raise Invalid('Repository is not configured')
+            for repo in rows:
                 # A worker observes origin/main with its existing Git access.
                 # Retry stale observations without consuming this hourly check.
                 if repo["observed_at"] < now-600:
+                    if repository is not None:
+                        raise Conflict('Observe current remote main before starting a release')
                     db.execute("UPDATE repositories SET last_error='Waiting for fresh origin/main observation' WHERE name=?", (repo["name"],))
                     continue
                 db.execute("UPDATE repositories SET next_check=?,last_checked=?,last_error='' WHERE name=?", ((int(now)//3600+1)*3600, now, repo["name"]))
@@ -571,8 +579,8 @@ class Store:
                     instructions += ' ' + IOS_UPLOAD_POLICY
                 steps = [{"name":"Validate and publish merged changes","kind":"publish","instructions":instructions}]
                 db.execute("""INSERT INTO tasks(id,request_key,request_hash,title,description,created,updated,submitted_by,priority,compute,requirements,dependencies,steps,result,task_type)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ident,key,hashlib.sha256(key.encode()).hexdigest(),title,instructions,now,now,"hourly-scheduler",50,"standard","{}","[]",encoded(steps),encoded({"release_target":target}),"publish"))
-                self.event(db, "hourly-scheduler", "submitted", ident, title)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ident,key,hashlib.sha256(key.encode()).hexdigest(),title,instructions,now,now,"admin" if repository else "hourly-scheduler",90 if repository else 50,"standard","{}","[]",encoded(steps),encoded({"release_target":target}),"publish"))
+                self.event(db, "admin" if repository else "hourly-scheduler", "submitted", ident, title)
                 created.append(ident)
             return created
 
