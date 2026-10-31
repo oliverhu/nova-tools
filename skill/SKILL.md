@@ -73,6 +73,17 @@ Preserve human stops and unresolved external outcomes. A technical failure may
 become a dependency wait when a concrete corrective task is queued, as below.
 Preserve branch/commit/artifact evidence and prior attempt history for the next worker.
 
+## Task dependencies
+
+Encode actual prerequisites as existing task IDs in `dependencies` when submitting
+or updating a task. Never rely on prose references or priority alone for ordering.
+Inspect the current dependency chain and service `waiting_reason`; preserve
+existing prerequisites when adding others. A task becomes eligible only after
+all its dependencies complete, including when requested with `next --task ID`.
+Keep independent work parallel: sharing a file or feature area alone is not a
+reason to serialize tasks. Update only the explicitly reviewed task relationships;
+do not rewrite unrelated tasks or interrupt running claims.
+
 ## Fix-attempt limit
 
 The user set **10 fix attempts per host assignment**, with at most **6 host
