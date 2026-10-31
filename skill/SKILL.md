@@ -52,8 +52,30 @@ and `worker` (oliver-mini or oliver-mac) and/or `dependencies` (existing task ID
 Stop owned operations before transferring. This clears the old claim and keeps
 the task queued. It becomes eligible automatically once every prerequisite is
 completed and the destination is available. Pull another eligible task immediately.
-Do not convert unresolved failures, human stops or exhausted acceptance attempts
-into scheduling waits. Preserve branch/commit/artifact evidence for the next worker.
+Preserve human stops and unresolved external outcomes. A technical failure may
+become a dependency wait when a concrete corrective task is queued, as below.
+Preserve branch/commit/artifact evidence and prior attempt history for the next worker.
+
+## UI-test tooling blockers
+
+When a feature is blocked by broken UI tools, collectors, fixture startup or
+focus/input delivery, enqueue a separate repair task immediately. Reuse an
+existing repair for the same root cause using a stable request key; do not create
+duplicates on each poll or another repair identical to a blocked repair. Include
+the affected feature IDs, exact failure/evidence, reproduction environment and
+checks that demonstrate the tool is repaired. A product assertion failure stays
+with the feature; missing credentials, account access or human actions are not
+UI-tool defects.
+
+After confirming the feature's owned operations stopped and checking external
+state, use `wait` to add the repair ID to its existing dependencies. Preserve
+other prerequisites, feature acceptance and source evidence. The feature becomes
+eligible automatically after the repair completes; it must then run the missing
+acceptance checks before merge. Repair completion never means feature acceptance.
+Keep consumed attempts as history; use a new corrected test run only after the
+repair is verified, without replaying unknown inputs or weakening assertions.
+Do not mark a repair completed merely because its tests were skipped or limits
+were increased. Diagnose shared tooling once and link all affected features.
 
 
 ## Hourly publication

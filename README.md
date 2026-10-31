@@ -166,3 +166,9 @@ assignment until one worker atomically claims the task.
 For source-only upgrades on the existing cluster, use
 `python3 deploy/deploy.py --apply --code-only`. This preserves live TLS names,
 networking and deployment settings while replacing the immutable source bundle.
+
+UI test-tooling failures create a separate, deduplicated repair task. After
+execution settles, the affected feature waits in the queue on that repair,
+retaining other dependencies and all acceptance evidence. Repair completion
+allows the feature to resume its missing checks; it does not count as feature
+acceptance. Product failures and missing account access are classified separately.
