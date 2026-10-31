@@ -245,3 +245,27 @@ For a misclassified artifact-location wait, only an administrator may use
 `reason`. The audit records a classification correction, not received approval.
 A recorded `human_stop: true` cannot be cleared this way. Original receipts,
 acceptance and attempt/reassignment counts are preserved; no active task is moved.
+
+## Durable approval responses
+
+`nova-coord approve --receipt approval.json` applies one verified human response
+to explicit pending task IDs/generations atomically. Its JSON format and same-turn
+worker procedure are documented in `skill/SKILL.md`. Source thread, question and
+message IDs identify an immutable approval receipt. Each task needs scope evidence,
+settled execution, checked external state and the existing authenticated owner claim.
+A pending receipt's structured `approval_request` must match the response question.
+For legacy receipts without a binding, the worker must explicitly verify scope.
+
+The client journals privately (0600) before POST, then GETs the authoritative receipt
+and current task states. Lost responses are recovered by reusing the receipt, by
+`approval-recover`, or by the existing next-task pull; no new background schedule.
+Rejected scope/ownership is retained for review rather than retried forever.
+The server API is `POST /api/approvals/apply` and authenticated
+`GET /api/approvals/APPROVAL_ID`. Source/scope conflicts reject instead of widening
+approval; duplicates never requeue a later generation or disturb active work.
+Task results, dependencies, counters and prior receipts remain unchanged.
+
+The dashboard labels approved queued/running work separately from an unanswered
+approval wait. Approval never means tests passed or removes prerequisite/capacity
+checks. `/api/state` advertises `capabilities.approval_receipts: 1`; use the installed
+client and deployed capability rather than an older copied server-source cache.

@@ -98,6 +98,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(403,{"error":"Cross-origin requests are not allowed"})
         store=self.server.store
         if self.command=="GET":
+            approval=re.fullmatch(r'/api/approvals/([0-9a-f]{64})',path)
+            if approval:
+                if actor not in ('admin','oliver-mac','oliver-mini'):
+                    return self.respond(403,{'error':'Authenticated approval actor required'})
+                return self.respond(200,store.approval_detail(actor,approval[1]))
             if path=="/api/state":
                 return self.respond(200,{**store.snapshot(),"identity":actor})
             match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})",path)
@@ -105,6 +110,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            if path == '/api/approvals/apply':
+                if actor not in ('admin','oliver-mac','oliver-mini'):
+                    return self.respond(403,{'error':'Authenticated approval actor required'})
+                return self.respond(200,store.apply_approval(actor,body))
             if path == '/api/releases/start':
                 if actor != 'admin':
                     return self.respond(403, {'error':'Explicit release requests require administrator identity'})

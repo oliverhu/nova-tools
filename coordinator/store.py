@@ -12,6 +12,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from .approvals import approval_payload, approval_id
 
 
 class Conflict(Exception):
@@ -72,6 +73,8 @@ CREATE TABLE IF NOT EXISTS repositories (
  published_head TEXT NOT NULL, observed_at REAL NOT NULL, next_check REAL NOT NULL,
  last_checked REAL, last_error TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS task_queue ON tasks(status,priority,created);
+CREATE TABLE IF NOT EXISTS approvals (
+ id TEXT PRIMARY KEY, actor TEXT NOT NULL, payload TEXT NOT NULL, at REAL NOT NULL);
 """
 
 
@@ -190,6 +193,7 @@ class Store:
         task['reassignment_limit'] = REASSIGNMENT_LIMIT
         task['execution_policy'] += (
             ' For external approval waits, finish with outcome pending_external_approval; never retry or resubmit approval requests automatically. '
+            'Record approval_request with thread_id and question_id in pending receipts. On the actual human response, immediately run approve --receipt with its source message and every explicitly covered pending task/generation, even while another claim is active. Read back queued eligibility before saying resumed; approval is not test qualification. '
             'After a verified human approval response, the last owning worker may explicitly retry with approval_received=true, approval_evidence naming the response, and settled execution/external-state evidence. '
             'Artifact-location waits are scheduling waits; an administrator may correct a mistaken approval classification through defer with an audited wait_correction. '
             'Settled blocked tasks retry after 15 minutes, up to 10 fix attempts per host assignment. '
@@ -606,6 +610,81 @@ class Store:
             self.owned(db, worker, ident, body.get("claim_token"), body.get("generation"))
         return self.reconcile(worker, ident, {**body, "action": "retry"})
 
+    def _approval_readback(self, db, row):
+        payload = json.loads(row['payload'])
+        tasks = []
+        for entry in payload['tasks']:
+            task = db.execute('SELECT * FROM tasks WHERE id=?', (entry['id'],)).fetchone()
+            tasks.append({**{k:task[k] for k in ('id','status','generation','owner')},
+                          'applied_generation':entry['generation'], **self.scheduling(db,task)})
+        return {'approval_id':row['id'],'recorded':True,'actor':row['actor'],'recorded_at':row['at'],
+                'source':payload['source'],'response':payload['response'],'scope':payload['scope'],'tasks':tasks}
+
+    def approval_detail(self, actor, ident):
+        with self.connection() as db:
+            row = db.execute('SELECT * FROM approvals WHERE id=?',(ident,)).fetchone()
+            if not row:
+                raise Invalid('Unknown approval receipt')
+            if actor not in ('admin', row['actor']):
+                raise Conflict('Approval receipt belongs to another actor')
+            return self._approval_readback(db,row)
+
+    def apply_approval(self, actor, body):
+        if actor not in ('admin','oliver-mac','oliver-mini'):
+            raise Conflict('Authenticated approval actor required')
+        payload = approval_payload(body)
+        ident, serialized = approval_id(payload), encoded(payload)
+        claims = {t['id']:t for t in body['tasks']}
+        with self.transaction() as db:
+            prior = db.execute('SELECT * FROM approvals WHERE id=?',(ident,)).fetchone()
+            if prior:
+                if prior['actor'] != actor or prior['payload'] != serialized:
+                    raise Conflict('This source response was already applied with different scope or evidence')
+                return {**self._approval_readback(db,prior),'replayed':True}
+            rows = []
+            # Validate the entire scope before making any transition.
+            for entry in payload['tasks']:
+                row = db.execute('SELECT * FROM tasks WHERE id=?',(entry['id'],)).fetchone()
+                if not row or row['status'] != 'pending_external_approval' or row['generation'] != entry['generation']:
+                    raise Conflict('Covered task is no longer pending at the supplied generation: '+entry['id'])
+                if actor != 'admin':
+                    self.owned(db,actor,row['id'],claims[row['id']].get('claim_token'),entry['generation'])
+                receipt = json.loads(row['result'])
+                if receipt.get('execution_stopped') is not True:
+                    raise Conflict('Prior execution has not settled: '+row['id'])
+                request = receipt.get('approval_request')
+                if request is not None and (not isinstance(request,dict) or any(
+                    request.get(k) != payload['source'][k] for k in ('thread_id','question_id'))):
+                    raise Conflict('Response does not match the task approval question: '+row['id'])
+                if receipt.get('human_stop') is True:
+                    raise Conflict('A recorded human stop requires separate explicit reconciliation: '+row['id'])
+                if row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
+                    raise Conflict('Retry limits exhausted: '+row['id'])
+                rows.append((row,entry))
+            db.execute('INSERT INTO approvals VALUES(?,?,?,?)',(ident,actor,serialized,self.clock()))
+            for row,entry in rows:
+                progress = 'Approval recorded: '+payload['response']+'. Awaiting execution/qualification. '+entry['scope_evidence']
+                db.execute("UPDATE tasks SET status='queued',last_owner=COALESCE(owner,last_owner),owner=NULL,claim_hash=NULL,lease_until=NULL,retry_after=NULL,updated=?,progress=? WHERE id=?",
+                           (self.clock(),progress,row['id']))
+                self.event(db,actor,'approval-applied',row['id'],encoded({'approval_id':ident,
+                    'generation':entry['generation'],'source':payload['source'],'response':payload['response'],
+                    'scope':payload['scope'],'scope_evidence':entry['scope_evidence']}))
+            record = db.execute('SELECT * FROM approvals WHERE id=?',(ident,)).fetchone()
+            return {**self._approval_readback(db,record),'replayed':False}
+
+    def approval_state(self, db, row):
+        if row['status'] == 'pending_external_approval':
+            return {'state':'awaiting_decision'}
+        if row['status'] not in ('queued','running'):
+            return None
+        for event in db.execute("SELECT * FROM events WHERE task_id=? AND kind IN ('approval-applied','reconciled','pending_external_approval') ORDER BY id DESC",(row['id'],)):
+            if event['kind'] == 'pending_external_approval':
+                break
+            detail = json.loads(event['detail'])
+            if event['kind'] == 'approval-applied' or detail.get('approval_received') is True:
+                return {'state':'approved','recorded_at':event['at'],'evidence':detail}
+        return None
+
     def reconcile(self, actor, ident, body):
         evidence = bounded(body.get("evidence"), "evidence", 16000)
         if body.get("execution_stopped") is not True or body.get("external_state_checked") is not True:
@@ -745,9 +824,11 @@ class Store:
             for t in tasks:
                 row = db.execute("SELECT * FROM tasks WHERE id=?",(t['id'],)).fetchone()
                 t.update(self.scheduling(db, row))
+                t['approval'] = self.approval_state(db,row)
                 if t["status"]=="queued":
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
+                "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only"},
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 
@@ -759,6 +840,7 @@ class Store:
                 raise Invalid("Unknown task")
             task=self.public_task(row)
             task.update(self.scheduling(db, row))
+            task['approval'] = self.approval_state(db,row)
             task["receipts"]=[{**dict(r),"receipt":json.loads(r["receipt"])} for r in db.execute("SELECT * FROM receipts WHERE task_id=? ORDER BY at",(ident,))]
             task["events"]=[dict(r) for r in db.execute("SELECT * FROM events WHERE task_id=? ORDER BY id",(ident,))]
             return task

@@ -93,6 +93,36 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(400,self.request(url,'admin',resume)[0])
         self.assertEqual(200,self.request(url,'admin',{**resume,'approval_received':True})[0])
 
+    def test_batch_approval_authenticated_atomic_and_read_back_over_http(self):
+        self.request('/api/worker/pulse','oliver-mini',{'capacity':{'cpus':12}})
+        covered=[]
+        for name in ('hover','modifier'):
+            _,raw,_=self.request('/api/tasks',body={'request_key':name,'title':name})
+            ident=json.loads(raw)['id'];_,raw,_=self.request('/api/worker/claim','oliver-mini',{'task_id':ident})
+            claim=json.loads(raw)
+            self.request('/api/tasks/'+ident+'/finish','oliver-mini',{'claim_token':claim['claim_token'],
+                'generation':1,'step':0,'outcome':'pending_external_approval',
+                'receipt':{'summary':'Choose tool','execution_stopped':True,
+                           'approval_request':{'thread_id':'thread','question_id':'question'}}})
+            covered.append({'id':ident,'generation':1,'claim_token':claim['claim_token'],
+                'scope_evidence':'Explicitly covered '+name,'execution_stopped':True,'external_state_checked':True})
+        body={'source':{'thread_id':'thread','question_id':'question','message_id':'human-message'},
+            'decision':'approved','decision_verified':True,'response':'Use installed Peekaboo',
+            'scope':'Isolated native tests only','tasks':covered}
+        self.assertEqual(403,self.request('/api/approvals/apply',body=body)[0])
+        self.assertEqual(409,self.request('/api/approvals/apply','oliver-mac',body)[0])
+        code,raw,_=self.request('/api/approvals/apply','oliver-mini',body)
+        self.assertEqual(200,code);result=json.loads(raw);ident=result['approval_id']
+        self.assertEqual(['queued','queued'],[t['status'] for t in result['tasks']])
+        _,raw,_=self.request('/api/approvals/apply','oliver-mini',body)
+        self.assertTrue(json.loads(raw)['replayed'])
+        self.assertEqual(403,self.request('/api/approvals/'+ident)[0])
+        code,raw,_=self.request('/api/approvals/'+ident,'oliver-mini')
+        self.assertEqual(200,code);self.assertTrue(json.loads(raw)['recorded'])
+        _,raw,_=self.request('/api/state')
+        state=json.loads(raw);self.assertEqual(1,state['capabilities']['approval_receipts'])
+        self.assertTrue(all(t['approval']['state']=='approved' for t in state['tasks']))
+
     def test_worker_approval_response_uses_existing_retry_endpoint(self):
         _,raw,_=self.request('/api/tasks',body={'request_key':'approval-resume','title':'Consent'})
         ident=json.loads(raw)['id'];self.request('/api/worker/pulse','oliver-mini',{'capacity':{'cpus':12}})

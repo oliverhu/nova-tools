@@ -45,13 +45,57 @@ after a concrete correction and proof of `execution_stopped`,
 publication or input outcome; inspect external state first. Old claims are fenced.
 Administrator reconciliation remains available for abandoned legacy tasks.
 
-When the human actually responds to an approval request, verify the response and
-external state, then use `retry ID --receipt /path.json` with the existing owning
-claim, `approval_received: true`, `approval_evidence` identifying the original
-human message and decision, `execution_stopped: true`, `external_state_checked:
-true`, and `evidence`. This explicitly returns settled work to the queue without
-an administrator relay. It does not bypass actual system permissions or claim
-that acceptance passed. Never infer approval from a timer or unrelated message.
+## Apply actual approval responses immediately
+
+When asking for a human decision, associate every explicitly covered pending task
+with that same question. Include `approval_request: {"thread_id":"...",
+"question_id":"..."}` in each pending receipt. Keep unrelated approval requests
+and genuine human stops separate. Do not mark qualification as complete merely
+because tool use was authorized.
+
+When the human actually answers, process that response **in the same turn**, even
+if another task is active. First verify the primary human message and map only
+the explicitly covered tasks. Persist one receipt and run
+`nova-coord approve --receipt /absolute/approval.json` before saying work resumed.
+This replaces a chat-only acknowledgment and a series of easily forgotten retries.
+The receipt has this shape (no credentials or claim tokens in the input file):
+
+```json
+{
+  "source": {"thread_id":"original-thread", "question_id":"original-call", "message_id":"actual-human-response"},
+  "decision":"approved", "decision_verified":true,
+  "response":"Exact human decision", "scope":"Exact authorized scope and constraints",
+  "tasks":[{"id":"existing-task-id", "generation":1,
+    "scope_evidence":"Why this task is explicitly covered by that question/answer",
+    "execution_stopped":true, "external_state_checked":true}]
+}
+```
+
+Include all covered *pending* tasks at their current generations. The installed
+client adds each existing owning claim, journals the exact request privately
+before sending, and reads back the service receipt and current task eligibility.
+The service applies the scope atomically; a missing/stale/foreign task rejects
+the batch without partial changes. A structured question binding must match;
+for legacy receipts without it, carefully verify and record explicit scope evidence.
+Approval source identity and scope are immutable after application.
+
+Read the returned states before reporting: queued means approved but waiting for
+capacity/prerequisites; running means execution started; neither means qualification
+passed. Do not interrupt another active claim. Use existing dependencies for real
+qualification prerequisites. Never infer consent from timeouts, an unrelated answer,
+or automatic polling, and never expand one response into blanket approval.
+
+If delivery/readback is interrupted, rerun the same `approve` command or use
+`nova-coord approval-recover`. The existing `next` command also reconciles only
+previously verified pending local receipts before pulling; there is no new schedule.
+Duplicate requests return their existing receipt/current task state without
+replaying transitions, including if a task has since moved to a new generation.
+Use `nova-coord approval-status APPROVAL_ID` for readback. An explicit service
+rejection is retained as `needs_review` in the private local approval journal;
+inspect the scope/current ownership instead of retrying unchanged or broadening it.
+The command never parses arbitrary chat text or grants OS permissions itself.
+Legacy per-task `retry` with `approval_received`/`approval_evidence` remains
+supported, but prefer one durable approval receipt for the full explicit scope.
 
 If an artifact-location wait was misclassified as Pending External Approval,
 verify access first. An administrator can use the existing `defer` endpoint with

@@ -13,9 +13,17 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import tempfile
+from .approvals import approval_payload, approval_id
 
 
 CONFIG=Path.home()/".config/nova-coordinator/client.json"
+
+
+class ServiceRejected(RuntimeError):
+    def __init__(self, status, message):
+        self.status=status
+        super().__init__(message)
 
 
 class Client:
@@ -38,7 +46,7 @@ class Client:
             with self.opener.open(request,timeout=15) as response:
                 return json.load(response)
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"Service rejected request ({e.code}): {e.read().decode()}") from None
+            raise ServiceRejected(e.code,f"Service rejected request ({e.code}): {e.read().decode()}") from None
 
     def pulse(self):
         memory=int(subprocess.check_output(["/usr/sbin/sysctl","-n","hw.memsize"]))/(1024**3) if sys.platform=="darwin" else 0
@@ -50,8 +58,11 @@ class Client:
             "disk_gb":round(max(0,disk-reserve),1),"capabilities":self.config.get("capabilities",["macos","development"])}})
 
     def claim(self,ident=None):
+        # Recover only decisions already explicitly verified and journaled locally.
+        recovered=self.recover_approvals()
         self.pulse()
         result=self.request("/api/worker/claim",{"task_id":ident})
+        if recovered:result['approval_recovery']=recovered
         if result.get("task"):
             path=self.state/(result["task"]["id"]+".json")
             fd=os.open(path,os.O_CREAT|os.O_TRUNC|os.O_WRONLY,0o600)
@@ -71,6 +82,71 @@ class Client:
 
     def finish(self,ident,receipt,outcome="completed"):
         return self.request(f"/api/tasks/{ident}/finish",{**self.claim_body(ident),"receipt":receipt,"outcome":outcome})
+
+    @staticmethod
+    def save_approval(path, value, create=False):
+        path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix='.approval-',dir=path.parent)
+        try:
+            with os.fdopen(fd,'w') as out:
+                json.dump(value,out,sort_keys=True);out.flush();os.fsync(out.fileno())
+            if create:
+                try:os.link(temporary,path)
+                except FileExistsError:pass
+            else:os.replace(temporary,path)
+            directory=os.open(path.parent,os.O_RDONLY)
+            try:os.fsync(directory)
+            finally:os.close(directory)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def apply_approval(self, receipt):
+        payload=approval_payload(receipt)
+        ident=approval_id(payload)
+        path=self.path.parent/'approvals'/(ident+'.json')
+        if not path.exists():
+            body={**payload,'tasks':[]}
+            for task in payload['tasks']:
+                identity=self.claim_body(task['id'])
+                if identity['generation'] != task['generation']:
+                    raise RuntimeError('Local claim generation differs from approval scope: '+task['id'])
+                body['tasks'].append({**task,'claim_token':identity['claim_token']})
+            # Persist the exact decision/scope/claims before any network mutation.
+            self.save_approval(path,{'state':'pending','request':body},create=True)
+        journal=json.loads(path.read_text())
+        if approval_payload(journal['request']) != payload:
+            raise RuntimeError('Approval source already journaled with different scope/evidence')
+        return self.deliver_approval(path,journal)
+
+    def deliver_approval(self, path, journal):
+        payload=approval_payload(journal['request']);ident=approval_id(payload)
+        if journal['state']=='needs_review':
+            raise RuntimeError('Approval requires scope/ownership review; inspect local journal '+str(path))
+        if journal['state'] != 'applied':
+            try:self.request('/api/approvals/apply',journal['request'])
+            except ServiceRejected as error:
+                if 400 <= error.status < 500:
+                    self.save_approval(path,{**journal,'state':'needs_review','error':str(error)})
+                raise
+        # A POST or a chat acknowledgment is insufficient: read current service state.
+        verified=self.request('/api/approvals/'+ident)
+        expected=sorted((t['id'],t['generation']) for t in payload['tasks'])
+        observed=sorted((t['id'],t['applied_generation']) for t in verified.get('tasks',[]))
+        if verified.get('approval_id') != ident or verified.get('recorded') is not True or observed != expected:
+            raise RuntimeError('Approval readback mismatch; journal retained for reconciliation')
+        self.save_approval(path,{**journal,'state':'applied','readback':verified})
+        return verified
+
+    def recover_approvals(self):
+        results=[]
+        for path in sorted((self.path.parent/'approvals').glob('*.json')):
+            journal=json.loads(path.read_text())
+            if journal.get('state')=='pending':
+                try:results.append(self.deliver_approval(path,journal))
+                except ServiceRejected as error:
+                    if not 400 <= error.status < 500:raise
+                    results.append({'approval_id':approval_id(journal['request']),'requires_review':True,'error':str(error)})
+        return results
 
 
 def supervised(client,ident,command,env=None,heartbeat_interval=25):
@@ -177,6 +253,11 @@ def main():
     permit=sub.add_parser("publish-permit");permit.add_argument("task",nargs="?",default=os.environ.get("NOVA_COORD_TASK_ID"))
     reconcile=sub.add_parser("reconcile");reconcile.add_argument("task");reconcile.add_argument("--file",type=Path,required=True)
     retry=sub.add_parser("retry");retry.add_argument("task");retry.add_argument("--receipt",type=Path,required=True)
+    approve=sub.add_parser('approve',help='Apply one verified human decision to its explicitly covered pending tasks')
+    approve.add_argument('--receipt',type=Path,required=True)
+    sub.add_parser('approval-recover',help='Reconcile interrupted, already verified local approval receipts')
+    approval_status=sub.add_parser('approval-status',help='Read an applied approval and current task eligibility')
+    approval_status.add_argument('approval_id')
     wait=sub.add_parser("wait",help="Queue settled work until its worker/prerequisites are ready")
     wait.add_argument("task");wait.add_argument("--receipt",type=Path,required=True)
     sub.add_parser("observe-main")
@@ -202,6 +283,9 @@ def main():
     elif args.command=="retry":
         receipt=json.loads(args.receipt.read_text())
         result=client.request(f"/api/tasks/{args.task}/retry", {**receipt, **client.claim_body(args.task)})
+    elif args.command=='approve':result=client.apply_approval(json.loads(args.receipt.read_text()))
+    elif args.command=='approval-recover':result={'recovered':client.recover_approvals()}
+    elif args.command=='approval-status':result=client.request('/api/approvals/'+args.approval_id)
     elif args.command=="wait":
         receipt=json.loads(args.receipt.read_text())
         result=client.request(f"/api/tasks/{args.task}/defer", {**receipt, **client.claim_body(args.task)})
