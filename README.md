@@ -172,3 +172,7 @@ execution settles, the affected feature waits in the queue on that repair,
 retaining other dependencies and all acceptance evidence. Repair completion
 allows the feature to resume its missing checks; it does not count as feature
 acceptance. Product failures and missing account access are classified separately.
+
+The user-set fix-attempt limit is 10 per issue for current and future feature
+and UI-tool repairs. Workers retain cumulative counts across retries/transfers;
+three used attempts leave seven. Older receipt limits remain historical evidence.

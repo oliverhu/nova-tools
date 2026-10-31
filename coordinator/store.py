@@ -130,6 +130,13 @@ class Store:
         task["execution_policy"] = ("Publish only the pinned release target; no global locks. Verify external outcome before reporting success."
             if task["current_step"] and task["current_step"]["kind"] == "publish" else
             "Implement, test and merge. DO NOT PUBLISH Nova from ordinary work. Only engine rebuilds are heavy. No global locks; ownership does not expire on missed heartbeat. If UI test tooling blocks a feature, enqueue or reuse a concrete UI-tool repair task and wait on its task ID; preserve feature acceptance and prior attempt history. Product defects and missing account access are not UI-tool failures. For scheduling waits, return settled work through POST /api/tasks/ID/defer with claim identity, execution_stopped, external_state_checked, evidence, and worker and/or dependencies; keep it queued rather than blocked. After settled work, immediately pull again.")
+        if task['task_type'] != 'publish':
+            task['fix_attempt_limit'] = 10
+            task['execution_policy'] += (' User-set fix limit: 10 attempts per issue, including attempts already used. '
+                'This supersedes older lower attempt limits for current and future fixes. '
+                'Keep the cumulative count in progress/receipts; do not reset it on retry or worker transfer. '
+                'Each retry should apply a concrete correction; preserve acceptance checks and verify prior execution settled. '
+                'At 10 unsuccessful attempts, record the remaining blocker.')
         task["heartbeat_stale"] = task["status"] == "running" and (task["lease_until"] or 0) <= self.clock()
         return task
 

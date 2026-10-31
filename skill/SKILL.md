@@ -56,6 +56,17 @@ Preserve human stops and unresolved external outcomes. A technical failure may
 become a dependency wait when a concrete corrective task is queued, as below.
 Preserve branch/commit/artifact evidence and prior attempt history for the next worker.
 
+## Fix-attempt limit
+
+The user set the limit to **10 fix attempts per issue**, including current
+feature and UI-tool repair tasks. This supersedes older lower limits in task
+notes or worker prompts. Count attempts already used; do not reset the total on
+retry, reassignment or a new test-run identity. For example, three used attempts
+leave seven. Record the cumulative count in progress and receipts. Apply a
+concrete correction before retrying, preserve the acceptance checks, and verify
+previous execution has settled. If ten attempts fail, record the remaining
+blocker and evidence. This changes the fix-attempt count, not acceptance criteria.
+
 ## UI-test tooling blockers
 
 When a feature is blocked by broken UI tools, collectors, fixture startup or
