@@ -6,6 +6,12 @@ const age=t=>{if(!t)return 'Not connected';let s=Math.max(0,Date.now()/1000-t);r
 const titleCase=s=>s==='pending_external_approval'?'Pending External Approval':String(s).replaceAll('_',' ').replace(/^./,c=>c.toUpperCase());
 async function api(path,body){const response=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(12000)});const value=await response.json();if(!response.ok)throw Error(value.error||`Request failed (${response.status})`);return value;}
 function badge(status,label){return `<span class="badge ${escapeHTML(status)}">${escapeHTML(label||titleCase(status))}</span>`;}
+function taskReason(task){
+ if(!['blocked','pending_external_approval'].includes(task.status))return '';
+ const result=task.result||{};
+ return [task.progress,result.summary,result.blocked_on,result.requiredHumanAction,result.blocker,task.waiting_reason]
+  .find(value=>typeof value==='string'&&value.trim())?.trim()||'No reason recorded.';
+}
 function render(){
  const counts=statuses=>state.tasks.filter(t=>statuses.includes(t.status)).length;
  $('queued').textContent=counts(['queued']);$('running').textContent=counts(['running']);$('held').textContent=counts(['held','blocked','failed']);$('completed').textContent=counts(['completed']);$('pending-external-approval').textContent=counts(['pending_external_approval']);
@@ -14,8 +20,8 @@ function render(){
  $('publish-text').textContent=repo?`Checks hourly for new merged changes. ${repo.last_error||('Next check: '+new Date(repo.next_check*1000).toLocaleTimeString())}`:'No repository configured yet.';
  $('publish-status').textContent=repo?'Hourly':'Not configured';
  $('task-count').textContent=state.tasks.length;
- const query=$('search').value.toLowerCase();const tasks=state.tasks.filter(t=>(filter==='all'||filter==='active'&&t.status==='running'||filter==='attention'&&['held','failed','blocked'].includes(t.status)||t.status===filter)&&`${t.title} ${t.description} ${t.id} ${t.owner||''} ${t.next_worker||''}`.toLowerCase().includes(query));
- $('task-rows').innerHTML=tasks.map(t=>`<tr><td><button data-task="${t.id}">${escapeHTML(t.title)}</button><div class="task-id">${t.id} · P${t.priority}</div></td><td>${badge(t.status)}${['queued','blocked','pending_external_approval'].includes(t.status)?`<div class="queue-note">${escapeHTML(t.waiting_reason)}</div>`:''}</td><td>${escapeHTML(t.next_worker_label||'—')}${t.last_owner&&t.status!=='running'?`<div class="queue-note">Last worked: ${escapeHTML(t.last_owner)}</div>`:''}</td><td><div class="progress">${t.steps.map((_,i)=>`<i class="${i<t.step?'done':i===t.step?'now':''}"></i>`).join('')}</div>${Math.min(t.step,t.steps.length)} / ${t.steps.length} steps<div class="queue-note">${t.fix_attempts_used}/${t.fix_attempt_limit} attempts · ${t.reassignment_count}/${t.reassignment_limit} host changes</div></td><td>${escapeHTML(titleCase(t.compute))}</td><td>${age(t.updated)}</td></tr>`).join('');
+ const query=$('search').value.toLowerCase();const tasks=state.tasks.filter(t=>(filter==='all'||filter==='active'&&t.status==='running'||filter==='attention'&&['held','failed','blocked'].includes(t.status)||t.status===filter)&&`${t.title} ${t.description} ${t.id} ${t.owner||''} ${t.next_worker||''} ${taskReason(t)}`.toLowerCase().includes(query));
+ $('task-rows').innerHTML=tasks.map(t=>`<tr><td><button data-task="${t.id}">${escapeHTML(t.title)}</button><div class="task-id">${t.id} · P${t.priority}</div></td><td>${badge(t.status)}${['queued','blocked','pending_external_approval'].includes(t.status)?`<div class="queue-note">${escapeHTML(t.waiting_reason)}</div>`:''}</td><td class="reason-cell">${escapeHTML(taskReason(t)||'—')}</td><td>${escapeHTML(t.next_worker_label||'—')}${t.last_owner&&t.status!=='running'?`<div class="queue-note">Last worked: ${escapeHTML(t.last_owner)}</div>`:''}</td><td><div class="progress">${t.steps.map((_,i)=>`<i class="${i<t.step?'done':i===t.step?'now':''}"></i>`).join('')}</div>${Math.min(t.step,t.steps.length)} / ${t.steps.length} steps<div class="queue-note">${t.fix_attempts_used}/${t.fix_attempt_limit} attempts · ${t.reassignment_count}/${t.reassignment_limit} host changes</div></td><td>${escapeHTML(titleCase(t.compute))}</td><td>${age(t.updated)}</td></tr>`).join('');
  $('empty').hidden=tasks.length>0;
  if(!tasks.length){$('empty').querySelector('h3').textContent=state.tasks.length?'No matching tasks.':'A clear runway.';$('empty').querySelector('p').textContent=state.tasks.length?'Try another filter or search.':'Add a task here or from either Mac. The service will route the work.';}
  const titles=Object.fromEntries(state.tasks.map(t=>[t.id,t.title]));

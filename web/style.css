@@ -4,3 +4,5 @@
 .queue-note{font-size:12px;line-height:1.4;color:var(--muted,#7d8776);margin-top:6px;max-width:280px;overflow-wrap:anywhere}
 
 .badge.pending_external_approval{background:#eee9f6;color:#71568e}.metrics>div{min-width:0}.metrics label,.metrics small{line-height:1.5}
+
+.reason-cell{min-width:250px;max-width:360px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;color:#667360;vertical-align:top}
