@@ -131,6 +131,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host",default="pi@192.168.2.13")
     parser.add_argument("--apply",action="store_true")
+    parser.add_argument('--code-only',action='store_true',help='Update source on an existing deployment, preserving live networking and TLS configuration')
     parser.add_argument('--prepare-tls',action='store_true',help='Prepare certificates and public trust before changing the running service')
     args=parser.parse_args()
     cluster=Cluster(args.host)
@@ -138,6 +139,21 @@ def main():
     runtime=ROOT/".runtime";runtime.mkdir(mode=0o700,exist_ok=True)
     if not args.apply and not args.prepare_tls:
         print(json.dumps({"namespace":NS,"objects":[x["kind"]+"/"+x["metadata"]["name"] for x in resources],"sha256":digest},indent=2));return
+    if args.code_only:
+        code=next(r for r in resources if r['kind']=='ConfigMap')
+        deployment=next(r for r in resources if r['kind']=='Deployment')
+        if not cluster.existing(deployment):
+            raise RuntimeError('Code-only updates require an existing owned deployment')
+        current=json.loads(cluster.run(['-n',NS,'get','deployment',NS,'-o','json']))
+        volumes=current['spec']['template']['spec']['volumes']
+        index=next(i for i,v in enumerate(volumes) if v['name']=='source' and 'configMap' in v)
+        cluster.apply(code)
+        patch=[{'op':'test','path':'/metadata/resourceVersion','value':current['metadata']['resourceVersion']},
+               {'op':'replace','path':f'/spec/template/spec/volumes/{index}/configMap','value':next(v['configMap'] for v in deployment['spec']['template']['spec']['volumes'] if v['name']=='source')}]
+        cluster.run(['-n',NS,'patch','deployment',NS,'--type=json','--patch-file=/dev/stdin'],json.dumps(patch).encode())
+        subprocess.run([sys.executable,str(ROOT/'scripts/package-client.py'),'--host',args.host],check=True)
+        print('Updated source '+code['metadata']['name']+'; networking and TLS preserved',flush=True)
+        return
     cluster.apply(obj("Namespace",NS,namespace=None))
     prepare_tls(cluster,runtime)
     if args.prepare_tls:return

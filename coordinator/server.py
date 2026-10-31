@@ -120,9 +120,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(403,{"error":"Use a worker identity"})
                 result=store.pulse(actor,body) if path.endswith("pulse") else store.claim(actor,body.get("task_id"))
                 return self.respond(200,result)
-            match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})/(heartbeat|finish|reconcile|retry)",path)
+            match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})/(heartbeat|finish|reconcile|retry|defer)",path)
             if match:
                 ident,action=match.groups()
+                if action=='defer' and actor=='admin':
+                    return self.respond(200,store.defer(actor,ident,body))
                 if action=="reconcile":
                     if actor!="admin":
                         return self.respond(403,{"error":"Reconciliation requires administrator identity"})

@@ -45,6 +45,17 @@ after a concrete correction and proof of `execution_stopped`,
 publication or input outcome; inspect external state first. Old claims are fenced.
 Administrator reconciliation remains available for abandoned legacy tasks.
 
+When the only blocker is waiting for another worker or prerequisite, use
+`wait ID --receipt /path.json` instead of marking the task blocked. The receipt
+contains `execution_stopped: true`, `external_state_checked: true`, `evidence`,
+and `worker` (oliver-mini or oliver-mac) and/or `dependencies` (existing task IDs).
+Stop owned operations before transferring. This clears the old claim and keeps
+the task queued. It becomes eligible automatically once every prerequisite is
+completed and the destination is available. Pull another eligible task immediately.
+Do not convert unresolved failures, human stops or exhausted acceptance attempts
+into scheduling waits. Preserve branch/commit/artifact evidence for the next worker.
+
+
 ## Hourly publication
 
 Every hour the service checks for a fresh observed main commit different from

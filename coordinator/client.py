@@ -177,6 +177,8 @@ def main():
     permit=sub.add_parser("publish-permit");permit.add_argument("task",nargs="?",default=os.environ.get("NOVA_COORD_TASK_ID"))
     reconcile=sub.add_parser("reconcile");reconcile.add_argument("task");reconcile.add_argument("--file",type=Path,required=True)
     retry=sub.add_parser("retry");retry.add_argument("task");retry.add_argument("--receipt",type=Path,required=True)
+    wait=sub.add_parser("wait",help="Queue settled work until its worker/prerequisites are ready")
+    wait.add_argument("task");wait.add_argument("--receipt",type=Path,required=True)
     sub.add_parser("observe-main")
     daemon=sub.add_parser("agent");daemon.add_argument("--interval",type=int,default=30)
     ui=sub.add_parser("ui");ui.add_argument("--port",type=int,default=18766)
@@ -200,6 +202,9 @@ def main():
     elif args.command=="retry":
         receipt=json.loads(args.receipt.read_text())
         result=client.request(f"/api/tasks/{args.task}/retry", {**receipt, **client.claim_body(args.task)})
+    elif args.command=="wait":
+        receipt=json.loads(args.receipt.read_text())
+        result=client.request(f"/api/tasks/{args.task}/defer", {**receipt, **client.claim_body(args.task)})
     elif args.command=="observe-main":result=observe_main(client)
     elif args.command=="publish-permit":
         if not args.task:parser.error('NOVA_COORD_TASK_ID or task ID is required')

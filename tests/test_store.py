@@ -38,6 +38,63 @@ class StoreTests(unittest.TestCase):
         self.configure(repo);self.now=(int(self.now)//3600+1)*3600;self.observe(head,repo);self.pulse()
         return self.store.tick_releases()[0]
 
+    def wait_body(self, claim, **changes):
+        return {**self.body(claim), 'execution_stopped':True, 'external_state_checked':True,
+                'evidence':'Source inspected and all owned execution settled; waiting for prerequisite', **changes}
+
+    def test_wait_routes_to_mini_after_dependency_without_manual_retry(self):
+        dep=self.add('prerequisite',requirements={'worker':'oliver-mini'})
+        prerequisite=self.store.claim('oliver-mini',dep['id'])
+        task=self.add('dependent');old=self.store.claim('oliver-mac',task['id'])
+        waiting=self.store.defer('oliver-mac',task['id'],self.wait_body(old,worker='oliver-mini',dependencies=[dep['id']]))
+        self.assertEqual('queued',waiting['status']);self.assertIsNone(waiting['owner'])
+        self.assertEqual('oliver-mac',waiting['last_owner']);self.assertEqual('oliver-mini',waiting['next_worker'])
+        self.assertFalse(waiting['ready']);self.assertEqual(dep['id'],waiting['waiting_dependencies'][0]['id'])
+        self.assertIsNone(self.store.claim('oliver-mac',task['id'])['task'])
+        self.assertIsNone(self.store.claim('oliver-mini',task['id'])['task'])
+        self.add('unrelated');self.assertIsNotNone(self.store.claim('oliver-mac')['task'])
+        self.finish(prerequisite)
+        self.assertTrue(self.store.detail(task['id'])['ready'])
+        new=self.store.claim('oliver-mini',task['id']);self.assertIsNotNone(new['task'])
+        with self.assertRaises(Conflict):self.finish(old)
+        self.assertEqual('completed',self.finish(new)['status'])
+
+    def test_admin_migrates_blocked_wait_without_losing_evidence(self):
+        task=self.add();old=self.store.claim('oliver-mac');self.finish(old,'blocked',branch='existing-branch')
+        result=self.store.defer('admin',task['id'],self.wait_body(old,worker='oliver-mini'))
+        self.assertEqual('existing-branch',result['result']['branch'])
+        self.assertEqual('oliver-mini',self.store.detail(task['id'])['next_worker'])
+        self.assertEqual(1,len(self.store.detail(task['id'])['receipts']))
+        self.assertIsNotNone(self.store.claim('oliver-mini')['task'])
+
+    def test_wait_rejects_foreign_active_admin_unsettled_and_stale_changes(self):
+        task=self.add();old=self.store.claim('oliver-mac');body=self.wait_body(old,worker='oliver-mini')
+        for actor in ['admin','oliver-mini']:
+            with self.assertRaises(Conflict):self.store.defer(actor,task['id'],body)
+        with self.assertRaises(Invalid):self.store.defer('oliver-mac',task['id'],{**body,'execution_stopped':False})
+        with self.assertRaises(Conflict):self.store.defer('oliver-mac',task['id'],{**body,'generation':0})
+        self.assertEqual('running',self.store.detail(task['id'])['status'])
+
+    def test_dependency_cycles_and_unknown_dependencies_rejected(self):
+        first=self.add('first');second=self.add('second',dependencies=[first['id']])
+        c=self.store.claim('oliver-mac',first['id'])
+        for deps in [[first['id']],[second['id']],['missing']]:
+            with self.assertRaises(Invalid):self.store.defer('oliver-mac',first['id'],self.wait_body(c,dependencies=deps))
+        self.assertEqual([],self.store.detail(first['id'])['dependencies'])
+
+    def test_waiting_worker_display_stays_mini_when_busy_or_offline(self):
+        busy=self.add('busy',requirements={'worker':'oliver-mini'});self.store.claim('oliver-mini',busy['id'])
+        task=self.add('waiting',requirements={'worker':'oliver-mini'})
+        shown=self.store.detail(task['id']);self.assertEqual('oliver-mini',shown['next_worker']);self.assertFalse(shown['ready'])
+        self.now+=100;shown=self.store.detail(task['id'])
+        self.assertEqual('oliver-mini',shown['next_worker']);self.assertFalse(shown['ready'])
+
+    def test_technical_blockers_stay_blocked_and_do_not_show_last_owner_as_next(self):
+        task=self.add();c=self.store.claim('oliver-mac');self.finish(c,'blocked')
+        shown=self.store.detail(task['id']);self.assertIsNone(shown['next_worker'])
+        self.assertEqual('Needs correction',shown['next_worker_label']);self.assertEqual('oliver-mac',shown['last_owner'])
+        self.assertIsNone(self.store.claim('oliver-mini')['task'])
+
     def test_concurrent_claims_one_winner(self):
         task=self.add()
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:

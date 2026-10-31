@@ -142,3 +142,27 @@ observations, exact published targets, and release metadata loop prevention.
 on an isolated service. It creates one test task, so do not use it casually
 against a production queue. Production verification should be read-only unless
 an explicit task is being submitted.
+
+## Waiting for a worker or prerequisite
+
+Scheduling waits stay `queued`, with `requirements.worker` and/or task IDs in
+`dependencies`. All prerequisites must complete before claim succeeds. A busy
+or offline destination does not remove the task from the queue. The next normal
+worker pull takes it once ready; no retry or administrator action is needed.
+
+An owning worker can return settled work with `nova-coord wait ID --receipt FILE`.
+The JSON needs `execution_stopped: true`, `external_state_checked: true`, descriptive
+`evidence`, and `worker` and/or `dependencies`. This atomically clears the old
+claim, retains its receipts and last worker, and fences stale updates. Dependency
+cycles are rejected. The `/api/tasks/ID/defer` endpoint also supports administrator
+migration of stopped blocked/failed tasks with an expected `generation`; it refuses
+administrator reassignment of running work. Technical failures, human stops and
+unresolved publication outcomes remain blocked until corrected.
+
+The dashboard shows the next/active worker separately from `Last worked` and
+explains queued prerequisites. `Either available Mac` means there is no fixed
+assignment until one worker atomically claims the task.
+
+For source-only upgrades on the existing cluster, use
+`python3 deploy/deploy.py --apply --code-only`. This preserves live TLS names,
+networking and deployment settings while replacing the immutable source bundle.

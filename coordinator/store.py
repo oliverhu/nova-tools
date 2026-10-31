@@ -74,6 +74,9 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
             columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
+            if "last_owner" not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN last_owner TEXT")
+                db.execute("UPDATE tasks SET last_owner=owner")
             if "task_type" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'work'")
                 db.execute("UPDATE tasks SET compute='standard' WHERE compute='heavy'")
@@ -126,7 +129,7 @@ class Store:
         task["current_step"] = task["steps"][task["step"]] if task["step"] < len(task["steps"]) else None
         task["execution_policy"] = ("Publish only the pinned release target; no global locks. Verify external outcome before reporting success."
             if task["current_step"] and task["current_step"]["kind"] == "publish" else
-            "Implement, test and merge. DO NOT PUBLISH Nova from ordinary work. Only engine rebuilds are heavy. No global locks; ownership does not expire on missed heartbeat. After settled work, immediately pull again.")
+            "Implement, test and merge. DO NOT PUBLISH Nova from ordinary work. Only engine rebuilds are heavy. No global locks; ownership does not expire on missed heartbeat. For scheduling waits, return settled work through POST /api/tasks/ID/defer with claim identity, execution_stopped, external_state_checked, evidence, and worker and/or dependencies; keep it queued rather than blocked. After settled work, immediately pull again.")
         task["heartbeat_stale"] = task["status"] == "running" and (task["lease_until"] or 0) <= self.clock()
         return task
 
@@ -257,6 +260,85 @@ class Store:
     def resources(self, row, worker):
         return []
 
+    def scheduling(self, db, row):
+        """Describe the next execution, separately from historical ownership."""
+        result = {"next_worker": None, "next_worker_label": "—", "ready": False,
+                  "waiting_reason": "", "waiting_dependencies": []}
+        if row['status'] == 'running':
+            return {**result, 'next_worker': row['owner'], 'next_worker_label': row['owner']}
+        if row['status'] != 'queued':
+            if row['status'] in ('blocked', 'failed', 'held'):
+                result.update(next_worker_label='Needs correction', waiting_reason=row['progress'])
+            return result
+        deps = [dict(db.execute('SELECT id,title,status FROM tasks WHERE id=?', (dep,)).fetchone())
+                for dep in json.loads(row['dependencies'])]
+        pending = [d for d in deps if d['status'] != 'completed']
+        previous = self.available_owner(db, row)
+        target = json.loads(row['requirements']).get('worker')
+        if not target and previous:
+            target = previous['id']
+        candidate = self.candidate(db, row)
+        if not target and row['compute'] == 'heavy':
+            mini = db.execute("SELECT * FROM workers WHERE id='oliver-mini' AND paused=0 AND seen>?", (self.clock()-90,)).fetchone()
+            target = 'oliver-mini' if mini and self.fits(row, mini) else candidate
+        result.update(next_worker=target, next_worker_label=target or 'Either available Mac',
+                      waiting_dependencies=pending, ready=not pending and candidate is not None)
+        if pending:
+            result['waiting_reason'] = 'Waiting for: ' + ', '.join(d['title'] + ' (' + d['status'] + ')' for d in pending)
+        elif not candidate:
+            result['waiting_reason'] = ('Waiting for ' + target + ' to be available and meet requirements') if target else 'Waiting for an available Mac that meets requirements'
+        else:
+            result['waiting_reason'] = 'Ready for pickup'
+        return result
+
+    def defer(self, actor, ident, body):
+        """Return settled work to the queue with explicit scheduling conditions."""
+        evidence = bounded(body.get('evidence'), 'evidence', 16000)
+        if body.get('execution_stopped') is not True or body.get('external_state_checked') is not True:
+            raise Invalid('Waiting requires settled execution and checked external state')
+        with self.transaction() as db:
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            if not row or row['status'] not in ('queued', 'running', 'blocked', 'failed'):
+                raise Conflict('Only settled work can return to the waiting queue')
+            if body.get('generation') != row['generation']:
+                raise Conflict('Task generation changed; reload before scheduling')
+            if actor != 'admin':
+                self.owned(db, actor, ident, body.get('claim_token'), body.get('generation'))
+            elif row['status'] == 'running':
+                raise Conflict('Running work must be deferred by its owning worker')
+            req = json.loads(row['requirements'])
+            if 'worker' in body:
+                if body['worker'] not in ('oliver-mac', 'oliver-mini'):
+                    raise Invalid('Unknown destination worker')
+                req['worker'] = body['worker']
+            deps = body.get('dependencies', json.loads(row['dependencies']))
+            if not isinstance(deps, list) or len(deps)>50 or not all(isinstance(d, str) for d in deps):
+                raise Invalid('dependencies must be task IDs')
+            if not req.get('worker') and not deps:
+                raise Invalid('Specify a destination worker or prerequisite task')
+            visited = set()
+            def visit(dep):
+                if dep == ident:
+                    raise Invalid('Dependency cycle')
+                if dep in visited:
+                    return
+                visited.add(dep)
+                found = db.execute('SELECT dependencies FROM tasks WHERE id=?', (dep,)).fetchone()
+                if not found:
+                    raise Invalid('Unknown dependency: ' + dep)
+                for child in json.loads(found['dependencies']):
+                    visit(child)
+            for dep in deps:
+                visit(dep)
+            if row['status'] == 'running':
+                db.execute('INSERT INTO receipts VALUES(?,?,?,?,?)', (ident,row['generation'],row['step'],
+                    encoded({'outcome':'waiting','receipt':{'summary':evidence,'execution_stopped':True,'external_state_checked':True}}),self.clock()))
+            db.execute("UPDATE tasks SET status='queued',requirements=?,dependencies=?,last_owner=COALESCE(owner,last_owner),owner=NULL,claim_hash=NULL,lease_until=NULL,progress=?,updated=? WHERE id=?",
+                       (encoded(req),encoded(list(dict.fromkeys(deps))),evidence,self.clock(),ident))
+            self.event(db, actor, 'waiting', ident, encoded({'worker':req.get('worker'),'dependencies':deps,'evidence':evidence}))
+            task = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            return {**self.public_task(task), **self.scheduling(db,task)}
+
     def claim(self, worker, task_id=None):
         with self.transaction() as db:
             self.expire(db)
@@ -353,7 +435,7 @@ class Store:
             if target:
                 receipt = {**receipt, "release_target": target}
             db.execute("INSERT INTO receipts VALUES(?,?,?,?,?)", (ident,row["generation"],row["step"],encoded({"outcome":outcome,"receipt":receipt}),self.clock()))
-            db.execute("UPDATE tasks SET status=?,step=?,updated=?,lease_until=NULL,progress=?,result=? WHERE id=?",
+            db.execute("UPDATE tasks SET status=?,step=?,updated=?,lease_until=NULL,progress=?,result=?,last_owner=owner WHERE id=?",
                        (status,next_step,self.clock(),receipt["summary"],encoded(receipt),ident))
             self.event(db,worker,status,ident,receipt["summary"])
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone())
@@ -470,8 +552,10 @@ class Store:
                 w=dict(row); w["capacity"]=json.loads(w["capacity"]); w["online"]=w["seen"]>self.clock()-90; workers.append(w)
             tasks=[self.public_task(r) for r in db.execute("SELECT * FROM tasks ORDER BY created DESC LIMIT 500")]
             for t in tasks:
+                row = db.execute("SELECT * FROM tasks WHERE id=?",(t['id'],)).fetchone()
+                t.update(self.scheduling(db, row))
                 if t["status"]=="queued":
-                    t["preferred_worker"] = self.candidate(db,db.execute("SELECT * FROM tasks WHERE id=?",(t["id"],)).fetchone())
+                    t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
@@ -483,6 +567,7 @@ class Store:
             if not row:
                 raise Invalid("Unknown task")
             task=self.public_task(row)
+            task.update(self.scheduling(db, row))
             task["receipts"]=[{**dict(r),"receipt":json.loads(r["receipt"])} for r in db.execute("SELECT * FROM receipts WHERE task_id=? ORDER BY at",(ident,))]
             task["events"]=[dict(r) for r in db.execute("SELECT * FROM events WHERE task_id=? ORDER BY id",(ident,))]
             return task

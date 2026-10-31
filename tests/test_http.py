@@ -62,6 +62,22 @@ class HTTPTests(unittest.TestCase):
         code,body,_=self.request(f"/api/tasks/{task['id']}/finish","oliver-mini",{"claim_token":claim["claim_token"],"generation":1,"step":0,"receipt":{"summary":"HTTP checks passed","execution_stopped":True}})
         self.assertEqual(200,code);self.assertEqual("completed",json.loads(body)["status"])
 
+    def test_defer_endpoint_requires_owner_and_returns_scheduling(self):
+        _,body,_=self.request('/api/tasks',body={'request_key':'waiting-http','title':'Wait'})
+        ident=json.loads(body)['id']
+        self.request('/api/worker/pulse','oliver-mac',{'capacity':{'memory_gb':16,'cpus':8,'disk_gb':100}})
+        _,body,_=self.request('/api/worker/claim','oliver-mac',{})
+        claim=json.loads(body)
+        body={'claim_token':claim['claim_token'],'generation':claim['task']['generation'],
+              'worker':'oliver-mini','execution_stopped':True,'external_state_checked':True,'evidence':'All operations stopped; requires mini'}
+        url='/api/tasks/'+ident+'/defer'
+        self.assertEqual(403,self.request(url,body=body)[0])
+        self.assertEqual(409,self.request(url,'oliver-mini',body)[0])
+        self.assertEqual(409,self.request(url,'admin',body)[0])
+        code,raw,_=self.request(url,'oliver-mac',body)
+        self.assertEqual(200,code);self.assertEqual('queued',json.loads(raw)['status'])
+        self.assertEqual('oliver-mini',json.loads(raw)['next_worker'])
+
     def test_repository_configuration_and_observations_require_identity(self):
         body={'repository':'owner/repo','published_commit':'a'*40}
         self.assertEqual(403,self.request('/api/repositories/configure','oliver-mini',body)[0])
