@@ -113,8 +113,9 @@ egress. `nova-coord observe-main` performs a manual read-only observation.
 The service is deployed with `python3 deploy/deploy.py --apply` using existing
 cluster SSH access. Source is an immutable ConfigMap; Python is digest-pinned.
 SQLite WAL lives on retained local storage, with separate 15-minute backups
-retaining96 snapshots. The service is a single durable instance, not automatic
-storage failover. Source rollback preserves the database and evidence.
+retaining96 snapshots. The service normally has one replica. Updates briefly overlap replicas on the
+same local SQLite volume, whose transactions fence claims and scheduler ticks;
+readiness keeps the API available. This is not automatic storage failover. Source rollback preserves the database and evidence.
 
 Clients are distributed from the cluster host:
 

@@ -94,7 +94,7 @@ def manifests():
     digest=hashlib.sha256(json.dumps(files,sort_keys=True).encode()).hexdigest()
     code_name=NS+"-code-"+digest[:16]
     security={"allowPrivilegeEscalation":False,"readOnlyRootFilesystem":True,"capabilities":{"drop":["ALL"]}}
-    deployment=obj("Deployment",NS,spec={"replicas":1,"strategy":{"type":"Recreate"},
+    deployment=obj("Deployment",NS,spec={"replicas":1,"strategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":1,"maxUnavailable":0}},
         "selector":{"matchLabels":{"app.kubernetes.io/name":NS}},"template":{
             "metadata":{"labels":LABELS,"annotations":{"nova.coordinator/source-sha256":digest}},
             "spec":{"automountServiceAccountToken":False,"nodeSelector":{"kubernetes.io/arch":"amd64"},
