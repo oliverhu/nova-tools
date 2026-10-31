@@ -95,11 +95,94 @@ class StoreTests(unittest.TestCase):
         self.now+=100;shown=self.store.detail(task['id'])
         self.assertEqual('oliver-mini',shown['next_worker']);self.assertFalse(shown['ready'])
 
-    def test_technical_blockers_stay_blocked_and_do_not_show_last_owner_as_next(self):
-        task=self.add();c=self.store.claim('oliver-mac');self.finish(c,'blocked')
-        shown=self.store.detail(task['id']);self.assertIsNone(shown['next_worker'])
-        self.assertEqual('Needs correction',shown['next_worker_label']);self.assertEqual('oliver-mac',shown['last_owner'])
+    def test_blocked_retries_on_different_host_after_cooldown(self):
+        task=self.add();old=self.store.claim('oliver-mac')
+        self.finish(old,'blocked',fix_attempts_used=3,branch='keep-source')
+        shown=self.store.detail(task['id'])
+        self.assertEqual('oliver-mini',shown['next_worker']);self.assertFalse(shown['ready'])
         self.assertIsNone(self.store.claim('oliver-mini')['task'])
+        self.now+=900;self.pulse()
+        self.assertTrue(self.store.detail(task['id'])['ready'])
+        self.assertIsNone(self.store.claim('oliver-mac')['task'])
+        new=self.store.claim('oliver-mini')
+        self.assertEqual(3,new['task']['fix_attempts_used'])
+        self.assertEqual('keep-source',new['task']['result']['branch'])
+        self.assertEqual(2,new['task']['generation'])
+        with self.assertRaises(Conflict):self.finish(old)
+        self.finish(new,'blocked',fix_attempts_used=4)
+        self.assertEqual('oliver-mac',self.store.detail(task['id'])['next_worker'])
+
+    def test_blocked_retry_falls_back_without_ignoring_hard_requirements(self):
+        task=self.add(requirements={'worker':'oliver-mini'})
+        old=self.store.claim('oliver-mini');self.finish(old,'blocked')
+        self.now+=900;self.pulse()
+        self.assertIsNone(self.store.claim('oliver-mac')['task'])
+        self.assertEqual('oliver-mini',self.store.claim('oliver-mini')['task']['owner'])
+        other=self.add('ordinary');old=self.store.claim('oliver-mac',other['id']);self.finish(old,'blocked')
+        self.now+=900;self.pulse()
+        self.assertEqual('oliver-mac',self.store.claim('oliver-mac',other['id'])['task']['owner'])
+
+    def test_retry_preserves_limit_across_restarts_and_manual_retry(self):
+        task=self.add();old=self.store.claim('oliver-mac')
+        self.finish(old,'blocked',feature_attempts=10)
+        self.store=Store(self.store.path,clock=lambda:self.now)
+        self.now+=900;self.pulse()
+        self.assertIsNone(self.store.claim('oliver-mini')['task'])
+        shown=self.store.detail(task['id'])
+        self.assertEqual(10,shown['fix_attempts_used']);self.assertFalse(shown['ready'])
+        self.assertEqual('Attempt limit reached',shown['next_worker_label'])
+        with self.assertRaises(Conflict):
+            self.store.reconcile('admin',task['id'],self.wait_body(old,action='retry'))
+
+    def test_pending_external_approval_never_retries_until_verified(self):
+        task=self.add();old=self.store.claim('oliver-mac')
+        self.finish(old,'pending_external_approval',approval_request='existing-request')
+        self.now+=86400;self.pulse()
+        self.assertIsNone(self.store.claim('oliver-mini')['task'])
+        self.assertIsNone(self.store.claim('oliver-mac')['task'])
+        shown=self.store.detail(task['id']);self.assertIsNone(shown['next_worker'])
+        self.assertEqual(0,shown['fix_attempts_used']);self.assertFalse(shown['ready'])
+        body=self.wait_body(old,action='retry')
+        with self.assertRaises(Invalid):self.store.reconcile('admin',task['id'],body)
+        with self.assertRaises(Conflict):self.store.retry('oliver-mac',task['id'],{**body,'approval_received':True})
+        resumed=self.store.reconcile('admin',task['id'],{**body,'approval_received':True})
+        self.assertEqual('queued',resumed['status'])
+        self.assertEqual('existing-request',resumed['result']['approval_request'])
+        self.assertIsNotNone(self.store.claim('oliver-mini')['task'])
+
+    def test_classify_external_approval_preserves_history_and_fences_claims(self):
+        task=self.add();old=self.store.claim('oliver-mac')
+        body=self.wait_body(old,action='pending_external_approval')
+        with self.assertRaises(Conflict):self.store.reconcile('admin',task['id'],body)
+        self.finish(old,'blocked',branch='preserved',fix_attempts_used=2)
+        with self.assertRaises(Conflict):self.store.reconcile('admin',task['id'],{**body,'generation':0})
+        pending=self.store.reconcile('admin',task['id'],body)
+        self.assertEqual('pending_external_approval',pending['status'])
+        self.assertEqual('preserved',pending['result']['branch']);self.assertIsNone(pending['owner'])
+        self.assertEqual(2,pending['fix_attempts_used'])
+        self.assertEqual(1,len(self.store.detail(task['id'])['receipts']))
+        self.now+=900;self.pulse();self.assertIsNone(self.store.claim('oliver-mini')['task'])
+
+    def test_blocked_retry_respects_dependencies_and_has_one_winner(self):
+        task=self.add();old=self.store.claim('oliver-mac');self.finish(old,'blocked')
+        dep=self.add('repair')
+        with self.store.transaction() as db:
+            db.execute('UPDATE tasks SET dependencies=? WHERE id=?',(json.dumps([dep['id']]),task['id']))
+        self.now+=900;self.pulse()
+        self.assertFalse(self.store.detail(task['id'])['ready'])
+        self.assertIsNone(self.store.claim('oliver-mini',task['id'])['task'])
+        self.finish(self.store.claim('oliver-mini',dep['id']))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            claims=list(pool.map(lambda _:self.store.claim('oliver-mini',task['id']),range(16)))
+        self.assertEqual(1,sum(c['task'] is not None for c in claims))
+
+    def test_blocked_retry_defaults_consume_attempts_and_counts_cannot_decrease(self):
+        task=self.add();old=self.store.claim('oliver-mac');self.finish(old,'blocked')
+        self.assertEqual(1,self.store.detail(task['id'])['fix_attempts_used'])
+        self.now+=900;self.pulse();new=self.store.claim('oliver-mini')
+        with self.assertRaises(Invalid):self.finish(new,'blocked',fix_attempts_used=0)
+        self.finish(new,'blocked')
+        self.assertEqual(2,self.store.detail(task['id'])['fix_attempts_used'])
 
     def test_concurrent_claims_one_winner(self):
         task=self.add()

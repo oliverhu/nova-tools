@@ -32,6 +32,19 @@ def bounded(value, name, maximum=12000):
     return value.strip()
 
 
+RETRY_DELAY = 15 * 60
+FIX_ATTEMPT_LIMIT = 10
+
+
+def reported_attempts(value):
+    """Read cumulative counts from current and historical worker receipts."""
+    if not isinstance(value, dict):
+        return 0
+    keys = ('fix_attempts_used', 'feature_attempts', 'attemptsConsumed', 'attemptsUsedCumulative')
+    counts = [v for k, v in value.items() if k in keys and type(v) is int and v >= 0]
+    return max([0, *counts, *(reported_attempts(v) for v in value.values() if isinstance(v, dict))])
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers (
  id TEXT PRIMARY KEY, capacity TEXT NOT NULL DEFAULT '{}', seen REAL NOT NULL DEFAULT 0,
@@ -90,6 +103,15 @@ class Store:
             if "task_type" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'work'")
                 db.execute("UPDATE tasks SET compute='standard' WHERE compute='heavy'")
+            if 'fix_attempts_used' not in columns:
+                db.execute('ALTER TABLE tasks ADD COLUMN fix_attempts_used INTEGER NOT NULL DEFAULT 0')
+                for task in db.execute('SELECT id,result FROM tasks').fetchall():
+                    receipts = [json.loads(r[0]) for r in db.execute('SELECT receipt FROM receipts WHERE task_id=?', (task['id'],))]
+                    used = max([reported_attempts(json.loads(task['result'])), *(reported_attempts(r) for r in receipts)])
+                    db.execute('UPDATE tasks SET fix_attempts_used=? WHERE id=?', (used, task['id']))
+            if 'retry_after' not in columns:
+                # Legacy blocks need classification before enabling automatic retry.
+                db.execute('ALTER TABLE tasks ADD COLUMN retry_after REAL')
             repo_columns = {r[1] for r in db.execute("PRAGMA table_info(repositories)")}
             if "published_task_created" not in repo_columns:
                 db.execute("ALTER TABLE repositories ADD COLUMN published_task_created REAL NOT NULL DEFAULT 0")
@@ -148,6 +170,12 @@ class Store:
                 'Each retry should apply a concrete correction; preserve acceptance checks and verify prior execution settled. '
                 'At 10 unsuccessful attempts, record the remaining blocker.')
         task["heartbeat_stale"] = task["status"] == "running" and (task["lease_until"] or 0) <= self.clock()
+        task['fix_attempt_limit'] = FIX_ATTEMPT_LIMIT
+        task['execution_policy'] += (
+            ' For external approval waits, finish with outcome pending_external_approval; never retry or resubmit approval requests automatically. '
+            'Settled blocked tasks retry after 15 minutes, up to 10 cumulative fix attempts, and may move to another eligible host. '
+            'Read all prior receipts and inspect external state before any retry side effects; apply a concrete correction. '
+            'Record cumulative fix_attempts_used in receipts; switching hosts does not reset it.')
         if (task['task_type']=='publish' and task['status'] not in ('completed','cancelled')
                 and task['result'].get('release_target',{}).get('repository')=='oliverhu/nova-browser'):
             task['delivery_targets'] = ['macos_public_release','ios_app_store_connect_upload_only']
@@ -253,6 +281,10 @@ class Store:
         workers = [w for w in workers if self.fits(task, w)]
         if not workers:
             return None
+        if task['status'] == 'blocked':
+            # Prefer a fresh host for a retry, but do not wait for a busy peer.
+            workers.sort(key=lambda w: (w['id'] == task['last_owner'], w['last_claim'], w['id']))
+            return workers[0]['id']
         # Keep subsequent stages with the session that owns the checkout.
         # An unavailable owner can be replaced using its recorded evidence.
         previous = self.available_owner(db, task)
@@ -287,6 +319,25 @@ class Store:
                   "waiting_reason": "", "waiting_dependencies": []}
         if row['status'] == 'running':
             return {**result, 'next_worker': row['owner'], 'next_worker_label': row['owner']}
+        if row['status'] == 'pending_external_approval':
+            return {**result, 'next_worker_label': 'Awaiting external approval',
+                    'waiting_reason': 'No automatic retries. Resume only after approval is verified.'}
+        if row['status'] == 'blocked':
+            candidate = self.candidate(db, row)
+            target = json.loads(row['requirements']).get('worker') or candidate
+            pending = [dict(db.execute('SELECT id,title,status FROM tasks WHERE id=?', (dep,)).fetchone())
+                       for dep in json.loads(row['dependencies'])]
+            pending = [d for d in pending if d['status'] != 'completed']
+            reason = self.retry_wait(row)
+            if not reason and pending:
+                reason = 'Waiting for: ' + ', '.join(d['title'] for d in pending)
+            if not reason and not candidate:
+                reason = 'Waiting for an available worker that meets requirements'
+            exhausted = row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT
+            return {**result, 'next_worker': None if exhausted else target,
+                    'next_worker_label': 'Attempt limit reached' if exhausted else target or 'Either available Mac',
+                    'waiting_dependencies': pending, 'ready': not reason,
+                    'waiting_reason': reason or 'Ready for automatic retry'}
         if row['status'] != 'queued':
             if row['status'] in ('blocked', 'failed', 'held'):
                 result.update(next_worker_label='Needs correction', waiting_reason=row['progress'])
@@ -311,6 +362,17 @@ class Store:
         else:
             result['waiting_reason'] = 'Ready for pickup'
         return result
+
+    def retry_wait(self, row):
+        if row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT:
+            return '10-attempt limit reached; reassignment does not reset attempts'
+        if json.loads(row['result']).get('execution_stopped') is not True:
+            return 'Prior execution must be confirmed stopped before retry'
+        if row['retry_after'] is None:
+            return 'Legacy block requires classification before retry'
+        if row['retry_after'] > self.clock():
+            return 'Automatic retry after ' + time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(row['retry_after']))
+        return ''
 
     def defer(self, actor, ident, body):
         """Return settled work to the queue with explicit scheduling conditions."""
@@ -363,9 +425,11 @@ class Store:
     def claim(self, worker, task_id=None):
         with self.transaction() as db:
             self.expire(db)
-            rows = db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY priority DESC,created,id").fetchall()
+            rows = db.execute("SELECT * FROM tasks WHERE status IN ('queued','blocked') ORDER BY priority DESC,created,id").fetchall()
             for row in rows:
                 if task_id and row["id"] != task_id:
+                    continue
+                if row['status'] == 'blocked' and (self.retry_wait(row) or self.candidate(db, row) != worker):
                     continue
                 deps = json.loads(row["dependencies"])
                 if any(db.execute("SELECT status FROM tasks WHERE id=?", (d,)).fetchone()[0] != "completed" for d in deps):
@@ -373,7 +437,7 @@ class Store:
                 own = db.execute("SELECT * FROM workers WHERE id=? AND paused=0 AND seen>?", (worker,self.clock()-90)).fetchone()
                 if not own or not self.fits(row,own) or db.execute("SELECT id FROM tasks WHERE owner=? AND status IN ('running','held')", (worker,)).fetchone():
                     continue
-                previous = self.available_owner(db, row)
+                previous = self.available_owner(db, row) if row['status'] == 'queued' else None
                 if previous and previous["id"] != worker:
                     continue
                 if row["compute"] == "heavy" and self.candidate(db, row) != worker:
@@ -385,7 +449,9 @@ class Store:
                 now = self.clock()
                 for resource in resources:
                     db.execute("INSERT INTO locks VALUES(?,?,?,?,?)", (resource,row["id"],generation,worker,now))
-                db.execute("""UPDATE tasks SET status='running',owner=?,claim_hash=?,generation=?,lease_until=?,updated=? WHERE id=?""",
+                if row['status'] == 'blocked':
+                    self.event(db, worker, 'automatic-retry', row['id'], encoded({'previous_worker': row['last_owner'], 'fix_attempts_used': row['fix_attempts_used']}))
+                db.execute("""UPDATE tasks SET status='running',owner=?,claim_hash=?,generation=?,lease_until=?,updated=?,retry_after=NULL WHERE id=?""",
                            (worker,hashlib.sha256(token.encode()).hexdigest(),generation,now+self.lease_seconds,now,row["id"]))
                 db.execute("UPDATE workers SET last_claim=? WHERE id=?", (now,worker))
                 self.event(db, worker, "claimed", row["id"], f"Step {row['step']+1}; generation {generation}; resources {resources}")
@@ -421,7 +487,7 @@ class Store:
         if receipt.get("execution_stopped") is not True:
             raise Invalid("Confirm execution_stopped after all owned operations settle")
         outcome = body.get("outcome", "completed")
-        if outcome not in ("completed", "blocked", "failed"):
+        if outcome not in ("completed", "blocked", "failed", "pending_external_approval"):
             raise Invalid("Invalid outcome")
         with self.transaction() as db:
             self.expire(db)
@@ -437,6 +503,12 @@ class Store:
                 return self.public_task(row)
             if row["status"] != "running" or body.get("step") != row["step"]:
                 raise Conflict("Task/step is not running; reconcile held outcomes separately")
+            if 'fix_attempts_used' in receipt and (type(receipt['fix_attempts_used']) is not int or receipt['fix_attempts_used'] < row['fix_attempts_used']):
+                raise Invalid('fix_attempts_used must preserve the cumulative attempt count')
+            attempts = max(row['fix_attempts_used'], reported_attempts(receipt))
+            if outcome == 'blocked':
+                # A failed execution consumes at least one attempt, even on an older client.
+                attempts = max(attempts, min(FIX_ATTEMPT_LIMIT, row['fix_attempts_used'] + 1))
             kind = json.loads(row["steps"])[row["step"]]["kind"]
             next_step = row["step"] + (outcome == "completed")
             status = ("completed" if next_step == len(json.loads(row["steps"])) else "queued") if outcome == "completed" else outcome
@@ -465,8 +537,9 @@ class Store:
             if target:
                 receipt = {**receipt, "release_target": target}
             db.execute("INSERT INTO receipts VALUES(?,?,?,?,?)", (ident,row["generation"],row["step"],encoded({"outcome":outcome,"receipt":receipt}),self.clock()))
-            db.execute("UPDATE tasks SET status=?,step=?,updated=?,lease_until=NULL,progress=?,result=?,last_owner=owner WHERE id=?",
-                       (status,next_step,self.clock(),receipt["summary"],encoded(receipt),ident))
+            db.execute("UPDATE tasks SET status=?,step=?,updated=?,lease_until=NULL,progress=?,result=?,last_owner=owner,fix_attempts_used=?,retry_after=? WHERE id=?",
+                       (status,next_step,self.clock(),receipt["summary"],encoded(receipt),attempts,
+                        self.clock()+RETRY_DELAY if outcome=='blocked' and attempts<FIX_ATTEMPT_LIMIT else None,ident))
             self.event(db,worker,status,ident,receipt["summary"])
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone())
 
@@ -481,21 +554,32 @@ class Store:
         if body.get("execution_stopped") is not True or body.get("external_state_checked") is not True:
             raise Invalid("Reconciliation requires stopped execution and checked external state")
         action = body.get("action")
-        if action not in ("retry", "complete", "cancel"):
+        if action not in ("retry", "complete", "cancel", "pending_external_approval"):
             raise Invalid("Invalid reconciliation action")
         with self.transaction() as db:
             self.expire(db)
             row = db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone()
-            if not row or row["status"] not in ("held", "blocked", "failed"):
-                raise Conflict("Only held, blocked or failed tasks can be reconciled")
+            if not row or row["status"] not in ("held", "blocked", "failed", "pending_external_approval"):
+                raise Conflict("Only stopped tasks can be reconciled")
+            if 'generation' in body and body['generation'] != row['generation']:
+                raise Conflict('Task generation changed; reload before reconciliation')
+            if action == 'pending_external_approval' or row['status'] == 'pending_external_approval':
+                if actor != 'admin' or body.get('generation') != row['generation']:
+                    raise Conflict('Approval classification/resume requires administrator and current generation')
+                if action in ('retry', 'complete') and body.get('approval_received') is not True:
+                    raise Invalid('External approval must be verified before resuming')
+            if action == 'retry' and row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT:
+                raise Conflict('10-attempt limit reached; preserve the cumulative count')
             if actor != "admin":
                 self.owned(db, actor, ident, body.get("claim_token"), body.get("generation"))
                 if action != "retry":
                     raise Conflict("Workers may only retry their own stopped attempts")
             step = row["step"] + (action == "complete")
             status = "cancelled" if action=="cancel" else "completed" if step==len(json.loads(row["steps"])) else "queued"
+            if action == 'pending_external_approval':
+                status = action
             db.execute("DELETE FROM locks WHERE task_id=?", (ident,))
-            db.execute("UPDATE tasks SET status=?,step=?,owner=NULL,claim_hash=NULL,lease_until=NULL,updated=?,progress=? WHERE id=?",
+            db.execute("UPDATE tasks SET status=?,step=?,last_owner=COALESCE(owner,last_owner),owner=NULL,claim_hash=NULL,lease_until=NULL,retry_after=NULL,updated=?,progress=? WHERE id=?",
                        (status,step,self.clock(),evidence,ident))
             self.event(db,actor,"reconciled",ident,encoded({"action":action,"evidence":evidence}))
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?",(ident,)).fetchone())

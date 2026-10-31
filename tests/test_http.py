@@ -62,6 +62,22 @@ class HTTPTests(unittest.TestCase):
         code,body,_=self.request(f"/api/tasks/{task['id']}/finish","oliver-mini",{"claim_token":claim["claim_token"],"generation":1,"step":0,"receipt":{"summary":"HTTP checks passed","execution_stopped":True}})
         self.assertEqual(200,code);self.assertEqual("completed",json.loads(body)["status"])
 
+    def test_pending_external_approval_finish_and_classification_over_http(self):
+        _,body,_=self.request('/api/tasks',body={'request_key':'approval-http','title':'Apple approval'})
+        ident=json.loads(body)['id']
+        self.request('/api/worker/pulse','oliver-mac',{'capacity':{'cpus':8}})
+        _,body,_=self.request('/api/worker/claim','oliver-mac',{})
+        claim=json.loads(body)
+        finish={'claim_token':claim['claim_token'],'generation':1,'step':0,
+                'outcome':'pending_external_approval','receipt':{'summary':'Awaiting Apple','execution_stopped':True}}
+        code,raw,_=self.request('/api/tasks/'+ident+'/finish','oliver-mac',finish)
+        self.assertEqual(200,code);self.assertEqual('pending_external_approval',json.loads(raw)['status'])
+        resume={'action':'retry','generation':1,'execution_stopped':True,'external_state_checked':True,'evidence':'Approval inspected'}
+        url='/api/tasks/'+ident+'/reconcile'
+        self.assertEqual(403,self.request(url,'oliver-mini',resume)[0])
+        self.assertEqual(400,self.request(url,'admin',resume)[0])
+        self.assertEqual(200,self.request(url,'admin',{**resume,'approval_received':True})[0])
+
     def test_defer_endpoint_requires_owner_and_returns_scheduling(self):
         _,body,_=self.request('/api/tasks',body={'request_key':'waiting-http','title':'Wait'})
         ident=json.loads(body)['id']

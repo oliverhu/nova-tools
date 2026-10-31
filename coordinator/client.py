@@ -171,7 +171,7 @@ def main():
     claim=sub.add_parser("next");claim.add_argument("--task")
     detail=sub.add_parser("show");detail.add_argument("task")
     beat=sub.add_parser("heartbeat");beat.add_argument("task");beat.add_argument("--progress")
-    done=sub.add_parser("finish");done.add_argument("task");done.add_argument("--receipt",type=Path,required=True);done.add_argument("--outcome",choices=["completed","blocked","failed"],default="completed")
+    done=sub.add_parser("finish");done.add_argument("task");done.add_argument("--receipt",type=Path,required=True);done.add_argument("--outcome",choices=["completed","blocked","failed","pending_external_approval"],default="completed")
     run=sub.add_parser("run");run.add_argument("task");run.add_argument("args",nargs=argparse.REMAINDER)
     publish=sub.add_parser("publish");publish.add_argument("task");publish.add_argument("--receipt",type=Path,required=True);publish.add_argument("--command",dest="publish_command",nargs=argparse.REMAINDER,required=True)
     permit=sub.add_parser("publish-permit");permit.add_argument("task",nargs="?",default=os.environ.get("NOVA_COORD_TASK_ID"))

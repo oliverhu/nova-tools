@@ -38,8 +38,8 @@ for long commands; its watchdog stops owned processes on service rejection or
 unavailability. A quiet reasoning interval does not expire ownership. Stop on
 an actual ownership rejection. Finish using `finish ID --receipt /path.json`
 with summary and `execution_stopped: true` only after operations settle; use
-`--outcome blocked` or `failed` for incomplete work. A failed/blocked task does
-not consume the worker forever. Its owner can use `retry ID --receipt /path.json`
+`--outcome blocked` for a technical failure or `failed` for an unknown outcome requiring inspection. Use `--outcome pending_external_approval` when work waits on Apple, an external reviewer or an explicit human approval. Pending External Approval never retries automatically; do not resubmit approval requests. Resume only after actual approval is verified and the task is explicitly returned to the queue. A failed/blocked task does
+not consume the worker forever. Settled blocked tasks become eligible automatically after 15 minutes, up to the cumulative 10-attempt limit. The service prefers a different available eligible host for a retry, while preserving hard worker/resource requirements. Inspect prior receipts and external state before side effects; apply a concrete correction before repeating a failed operation. Report cumulative `fix_attempts_used` in each receipt. Reassignment never resets attempts. Its owner can also use `retry ID --receipt /path.json`
 after a concrete correction and proof of `execution_stopped`,
 `external_state_checked`, and descriptive `evidence`. Never replay an unknown
 publication or input outcome; inspect external state first. Old claims are fenced.

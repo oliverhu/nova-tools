@@ -189,3 +189,26 @@ An explicit user release request can start immediately through authenticated
 `POST /api/releases/start` with `repository`. It requires a fresh remote-main
 observation and shares hourly exact-commit deduplication; it does not replay
 blocked releases of the same commit. New explicit releases have priority 90.
+
+## External approval and technical retries
+
+`pending_external_approval` is displayed as **Pending External Approval** in its
+own dashboard category. Workers report it with
+`finish ID --outcome pending_external_approval --receipt /path.json`. It releases
+the worker and never retries automatically. An administrator can classify an
+existing stopped task using `reconcile` with `action: pending_external_approval`,
+current `generation`, settled execution, checked external state and evidence.
+Returning it to the queue requires `action: retry`, `approval_received: true`
+and evidence of the verified approval. Existing approval requests are not resubmitted.
+
+Technical `blocked` tasks become claimable automatically after 15 minutes. A
+different available host is preferred; explicit host/capacity requirements and
+dependencies still apply. A running claim is never reassigned. The UI distinguishes
+the actual next worker from the last worker and shows retry readiness. Workers
+read previous evidence and inspect external state before executing a correction.
+
+Receipts report cumulative `fix_attempts_used`. Prior counts survive reassignment
+and deployment; the service stops automatic retries at 10 attempts. Older clients
+without a count consume at least one attempt per blocked execution. Legacy blocked
+records require classification once rather than being replayed blindly. Failed
+unknown outcomes and human holds retain explicit reconciliation.
