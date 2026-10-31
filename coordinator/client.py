@@ -114,7 +114,7 @@ def supervised(client,ident,command,env=None,heartbeat_interval=25):
     finally:
         stop.set(); thread.join(timeout=20)
     if lost:
-        raise RuntimeError("Lost coordination service; owned process stopped. The task is held for reconciliation.")
+        raise RuntimeError("Lost coordination service; owned process stopped. Task ownership remains unchanged; inspect and report the stopped attempt.")
     try:
         os.killpg(process.pid,0)
     except ProcessLookupError:
@@ -126,16 +126,32 @@ def supervised(client,ident,command,env=None,heartbeat_interval=25):
     return code
 
 
+def observe_main(client):
+    """Report actual remote main with existing host Git credentials; no fetch/write."""
+    repo = client.config.get("repository")
+    if not repo:
+        return {"observed": False, "reason": "Repository checkout is not configured"}
+    started = time.time()
+    branch = repo.get("branch", "main")
+    result = subprocess.run(["git", "-C", repo["path"], "ls-remote", "--exit-code", repo.get("remote", "origin"), "refs/heads/"+branch],
+        capture_output=True, text=True, timeout=25, env={**os.environ,"GIT_TERMINAL_PROMPT":"0"})
+    if result.returncode:
+        raise RuntimeError("Remote main observation failed; previous release state unchanged")
+    lines = [line.split() for line in result.stdout.splitlines()]
+    heads = [line[0] for line in lines if len(line)==2 and line[1]=="refs/heads/"+branch]
+    if len(heads)!=1:
+        raise RuntimeError("Remote main observation was ambiguous")
+    return client.request("/api/repositories/observe", {"repository":repo["name"],"branch":branch,"commit":heads[0],"observed_at":started})
+
+
 def publish_permit(client,ident):
     claim=client.claim_body(ident)
     task=client.request('/api/tasks/'+ident)
-    state=client.request('/api/state')
     if (task['status']!='running' or task['owner']!=client.config['worker'] or
-        task['generation']!=claim['generation'] or task['current_step']['kind']!='publish' or
-        not any(l['resource']=='publish' and l['task_id']==ident and l['generation']==claim['generation'] for l in state['locks'])):
-        raise RuntimeError('A current exclusive publish claim is required')
-    client.heartbeat(ident,'Verified exclusive publish permit')
-    return {'task_id':ident,'generation':claim['generation'],'worker':client.config['worker'],'exclusive':True}
+        task['generation']!=claim['generation'] or task['current_step']['kind']!='publish'):
+        raise RuntimeError('A current hourly publish task claim is required')
+    client.heartbeat(ident,'Verified publish task ownership (no global lock)')
+    return {'task_id':ident,'generation':claim['generation'],'worker':client.config['worker'],'exclusive':False}
 
 
 def main():
@@ -147,6 +163,7 @@ def main():
     add=sub.add_parser("add")
     add.add_argument("title",nargs="?")
     add.add_argument("--description")
+    add.add_argument("--task-type",choices=["work","engine_rebuild"],default="work")
     add.add_argument("--compute",choices=["light","standard","heavy"],default="standard")
     add.add_argument("--priority",type=int,default=50)
     add.add_argument("--key")
@@ -159,6 +176,8 @@ def main():
     publish=sub.add_parser("publish");publish.add_argument("task");publish.add_argument("--receipt",type=Path,required=True);publish.add_argument("--command",dest="publish_command",nargs=argparse.REMAINDER,required=True)
     permit=sub.add_parser("publish-permit");permit.add_argument("task",nargs="?",default=os.environ.get("NOVA_COORD_TASK_ID"))
     reconcile=sub.add_parser("reconcile");reconcile.add_argument("task");reconcile.add_argument("--file",type=Path,required=True)
+    retry=sub.add_parser("retry");retry.add_argument("task");retry.add_argument("--receipt",type=Path,required=True)
+    sub.add_parser("observe-main")
     daemon=sub.add_parser("agent");daemon.add_argument("--interval",type=int,default=30)
     ui=sub.add_parser("ui");ui.add_argument("--port",type=int,default=18766)
     args=parser.parse_args()
@@ -167,7 +186,7 @@ def main():
     elif args.command=="show":result=client.request("/api/tasks/"+args.task)
     elif args.command=="pulse":result=client.pulse()
     elif args.command=="add":
-        body=json.loads(args.file.read_text()) if args.file else {"title":args.title,"description":args.description or args.title,"compute":args.compute,"priority":args.priority}
+        body=json.loads(args.file.read_text()) if args.file else {"title":args.title,"description":args.description or args.title,"compute":args.compute,"task_type":args.task_type,"priority":args.priority}
         body.setdefault("request_key",args.key or uuid.uuid4().hex)
         result=client.request("/api/tasks",body)
     elif args.command=="next":
@@ -178,6 +197,10 @@ def main():
     elif args.command=="heartbeat":result=client.heartbeat(args.task,args.progress)
     elif args.command=="finish":result=client.finish(args.task,json.loads(args.receipt.read_text()),args.outcome)
     elif args.command=="reconcile":result=client.request(f"/api/tasks/{args.task}/reconcile",json.loads(args.file.read_text()))
+    elif args.command=="retry":
+        receipt=json.loads(args.receipt.read_text())
+        result=client.request(f"/api/tasks/{args.task}/retry", {**receipt, **client.claim_body(args.task)})
+    elif args.command=="observe-main":result=observe_main(client)
     elif args.command=="publish-permit":
         if not args.task:parser.error('NOVA_COORD_TASK_ID or task ID is required')
         result=publish_permit(client,args.task)
@@ -206,9 +229,13 @@ def main():
         serve(client,args.port);return
     elif args.command=="agent":
         # Capacity/inbox polling uses no language model and makes no peer calls.
+        last_observation=0
         while True:
             try:
                 client.pulse()
+                if time.monotonic()-last_observation >= 120:
+                    observe_main(client)
+                    last_observation=time.monotonic()
                 snapshot=client.request("/api/state")
                 inbox={"updated":time.time(),"worker":client.config["worker"],
                     "tasks":[t for t in snapshot["tasks"] if t.get("preferred_worker")==client.config["worker"] or t.get("owner")==client.config["worker"]]}

@@ -21,6 +21,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config",type=Path,required=True)
     p.add_argument("--build-path",type=Path)
+    p.add_argument("--repository-path",type=Path)
     p.add_argument("--no-start",action="store_true")
     p.add_argument("--trust-internal-ca",action="store_true",help="Trust the public internal CA for SSL in the login keychain")
     args=p.parse_args()
@@ -46,6 +47,10 @@ def main():
             shutil.copy2(root_ca,cfg/'internal-root.crt')
         config['root_ca_file']=str(cfg/'internal-root.crt')
     if args.build_path:config["build_path"]=str(args.build_path)
+    if args.repository_path:
+        if not (args.repository_path/".git").exists():
+            p.error("repository-path must be an existing Git checkout")
+        config["repository"]={"name":"oliverhu/nova-browser","branch":"main","remote":"origin","path":str(args.repository_path)}
     config.setdefault("disk_reserve_gb",50)
     config.setdefault("capabilities",["macos","development"])
     restricted(cfg/"client.json",json.dumps(config,indent=2))

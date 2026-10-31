@@ -105,6 +105,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            if path == "/api/repositories/configure":
+                if actor != "admin":
+                    return self.respond(403, {"error": "Repository baseline requires administrator identity"})
+                return self.respond(200, store.configure_repository(body))
+            if path == "/api/repositories/observe":
+                if actor not in ("oliver-mac", "oliver-mini"):
+                    return self.respond(403, {"error": "Use a worker identity"})
+                return self.respond(200, store.observe_repository(actor, body))
             if path=="/api/tasks":
                 return self.respond(200,store.submit(actor,body))
             if path in ("/api/worker/pulse","/api/worker/claim"):
@@ -112,7 +120,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(403,{"error":"Use a worker identity"})
                 result=store.pulse(actor,body) if path.endswith("pulse") else store.claim(actor,body.get("task_id"))
                 return self.respond(200,result)
-            match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})/(heartbeat|finish|reconcile)",path)
+            match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})/(heartbeat|finish|reconcile|retry)",path)
             if match:
                 ident,action=match.groups()
                 if action=="reconcile":
@@ -160,6 +168,14 @@ def main():
     default_hosts += [f'127.0.0.1:{args.port}',f'localhost:{args.port}']
     hosts=os.environ.get('COORD_ALLOWED_HOSTS',','.join(default_hosts)).split(',')
     server=Server((args.host,args.port),Store(args.db),credentials,args.web,allowed_hosts=hosts)
+    def hourly_releases():
+        while True:
+            try:
+                server.store.tick_releases()
+            except Exception:
+                print("Hourly release queue check failed; no publication was executed", flush=True)
+            time.sleep(30)
+    threading.Thread(target=hourly_releases, daemon=True).start()
     backup_dir=os.environ.get("COORD_BACKUPS")
     if backup_dir:
         def backups():

@@ -17,6 +17,7 @@ def main():
     p.add_argument("--worker",choices=["oliver-mac","oliver-mini"],required=True)
     p.add_argument("--cluster-host",default="pi@192.168.2.13")
     p.add_argument("--build-path")
+    p.add_argument("--repository-path")
     p.add_argument('--trust-internal-ca',action='store_true')
     a=p.parse_args()
     def remote(command):
@@ -39,9 +40,13 @@ def main():
         (root/'internal-root.crt').write_text(trust['root.crt'])
         config=root/"client.json"
         fd=os.open(config,os.O_CREAT|os.O_WRONLY,0o600)
-        with os.fdopen(fd,"w") as f:json.dump({"worker":a.worker,"url":"https://192.168.2.13:31866","token":credentials[a.worker],"ca_file":str(root/"ca.crt"),'root_ca_file':str(root/'internal-root.crt')},f)
+        existing=Path.home()/".config/nova-coordinator/client.json"
+        previous=json.loads(existing.read_text()) if existing.exists() else {}
+        if previous and previous.get("worker") != a.worker:
+            raise RuntimeError("Existing client belongs to another worker")
+        with os.fdopen(fd,"w") as f:json.dump({**previous,"worker":a.worker,"url":"https://192.168.2.13:31866","token":credentials[a.worker],"ca_file":str(root/"ca.crt"),'root_ca_file':str(root/'internal-root.crt')},f)
         import sys
-        subprocess.run([sys.executable,str(root/"scripts/install-client.py"),"--config",str(config),*(["--build-path",a.build_path] if a.build_path else []),*(['--trust-internal-ca'] if a.trust_internal_ca else [])],check=True)
+        subprocess.run([sys.executable,str(root/"scripts/install-client.py"),"--config",str(config),*(["--build-path",a.build_path] if a.build_path else []),*(["--repository-path",a.repository_path] if a.repository_path else []),*(['--trust-internal-ca'] if a.trust_internal_ca else [])],check=True)
 
 
 if __name__=="__main__":main()

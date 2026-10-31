@@ -62,5 +62,14 @@ class HTTPTests(unittest.TestCase):
         code,body,_=self.request(f"/api/tasks/{task['id']}/finish","oliver-mini",{"claim_token":claim["claim_token"],"generation":1,"step":0,"receipt":{"summary":"HTTP checks passed","execution_stopped":True}})
         self.assertEqual(200,code);self.assertEqual("completed",json.loads(body)["status"])
 
+    def test_repository_configuration_and_observations_require_identity(self):
+        body={'repository':'owner/repo','published_commit':'a'*40}
+        self.assertEqual(403,self.request('/api/repositories/configure','oliver-mini',body)[0])
+        self.assertEqual(200,self.request('/api/repositories/configure','admin',body)[0])
+        import time
+        observation={'repository':'owner/repo','commit':'b'*40,'observed_at':time.time()}
+        self.assertEqual(403,self.request('/api/repositories/observe',body=observation)[0])
+        self.assertEqual(200,self.request('/api/repositories/observe','oliver-mini',observation)[0])
+
 
 if __name__=="__main__":unittest.main()

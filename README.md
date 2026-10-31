@@ -1,199 +1,142 @@
-# Nova coordination service
+# Nova task queue
 
-A private Kubernetes task queue and status dashboard for `oliver-mac` and
-`oliver-mini`. Both have the same permissions and pull from the service. They
-never contact one another. The service queues requests, tracks results, routes heavy work to the mini
-and permits only one publish flow at a time.
+A private Kubernetes task queue for `oliver-mac` and `oliver-mini`. Both workers
+claim untaken tasks atomically, implement and test the change, and merge it into
+main. Ordinary work **does not publish**. There are no shared publishing,
+integration, main, or desktop locks.
 
-## Deployed endpoints
+Only engine rebuilds are heavy. They prefer Mini; application builds, UI tests,
+and ordinary features are standard work available to either qualified Mac.
+Explicit memory, disk, CPU, capability and machine requirements still apply.
 
-- Cluster API and dashboard: `https://192.168.2.13:31866`
-- Optional local client gateway: `http://127.0.0.1:18766`
-- In-cluster DNS: `nova-coordinator.nova-coordinator.svc.cluster.local:443`
-- Kubernetes namespace / deployment: `nova-coordinator`
+## Service and workers
 
-The cluster dashboard opens directly on the LAN without a login or access-token
-prompt. Its certificate is signed by the Nova Internal Coordination CA, whose
-public root is installed in both clients for verified service connections.
-Browser trust is verified on the mini; the Mac still needs its local macOS
-trust confirmation (its worker is already connected securely). Machine identity tokens
-remain automatic for worker claims and administrative actions. There is no
-public ingress or tunnel.
+- API/dashboard: `https://192.168.2.13:31866`
+- Kubernetes namespace/deployment: `nova-coordinator`
+- Optional local dashboard gateway: `http://127.0.0.1:18766`
+- Client: `~/.local/bin/nova-coord`
+- Installed instructions: `~/.codex/skills/nova-coordination/SKILL.md`
 
-## Worker behavior
+The LAN dashboard opens without a login prompt. Automatic worker credentials
+protect mutations; internal CA verification protects HTTPS. Browser OS trust is
+separate from client trust. No public ingress or tunnel is installed. Never
+print client configurations, credentials, or claim tokens.
 
-Submit a bug fix or feature through either chat or the dashboard. It enters
-the shared queue. Each existing Mac session checks every **15 minutes**,
-continues its current claim, and immediately pulls again after task completion.
-One session implements and tests a routine task in one stage. A publish stage
-is added only when authorized and claimed only when ready. Both Macs can
-develop concurrently while the service serializes publishing. There are no
-peer grants, mandatory plan/review handoffs, or coordinator approval stages.
-An empty queue ends the scheduled check quietly.
+The existing chat workers check every **15 minutes**, and immediately check
+again after completed, stopped or blocked work settles. No eligible task means
+a quiet return until the next wake. There are no peer grants or intermediate
+coordinator approval stages. The background capacity reporter observes branch
+heads and updates the inbox; it does not execute engineering tasks or models.
 
-
-Ordinary tasks can be claimed by either available worker. Heavy tasks prefer
-the mini while it is healthy and meets the task's requirements, including when
-it is busy. They may fall back to the Mac if the mini is offline or unsuitable.
-Hard memory, CPU, disk and capability requirements are never relaxed. The client
-reports total memory/CPU and free build-disk space after a 50 GiB reserve. It
-does not claim to measure every other process's memory or CPU reservation.
-
-The lightweight background agent reports capacity and polls a local inbox. It
-does not start a language model, use API credits, or execute tasks unattended.
-Chats execute the steps they claim, with long commands supervised by the
-client. The installed `nova-coordination` skill teaches future chats how to
-submit requests, pull work and record results. Existing active chats must adopt
-the new workflow; old in-flight work is not silently imported or cancelled.
-
-## Connect a Mac
-
-Both Macs are configured and connected. To reinstall a client, run the following
-on **oliver-mac** (use `--worker oliver-mini` on the mini). Each Mac needs its own
-SSH access to the cluster host. The cluster is the distribution point:
+## Claims and recovery
 
 ```sh
-ssh pi@192.168.2.13 'cat /home/pi/.local/share/nova-coordinator/bootstrap.py' > /tmp/nova-coordinator-bootstrap.py
-python3 /tmp/nova-coordinator-bootstrap.py --worker oliver-mac --build-path /Volumes/NovaEngineBuild --trust-internal-ca
+nova-coord add 'Rebuild pinned engine' --task-type engine_rebuild --key engine-001
+nova-coord add 'Fix a sidebar bug' --key sidebar-001
+nova-coord next
+nova-coord show TASK_ID
+nova-coord heartbeat TASK_ID --progress 'Checking native behavior'
+nova-coord run TASK_ID -- python3 scripts/check.py
+nova-coord finish TASK_ID --receipt /absolute/receipt.json
 ```
 
-Choose its actual build volume if different. The installer places the client in
-`~/.local/share/nova-coordinator`, its private configuration in
-`~/.config/nova-coordinator`, a command at `~/.local/bin/nova-coord`, the Codex
-skill in `~/.codex/skills/nova-coordination`, and two login agents for capacity
-reporting and the local dashboard. It does not install the coordination server
-on either Mac. The server and authoritative database run only in Kubernetes.
+Task JSON accepts `request_key`, `title`, `description`, optional `task_type`
+(`work` or `engine_rebuild`), priority, resource requirements and dependencies.
+Default workflow is one Implement and verify step, including merge. Only
+`engine_rebuild` receives heavy scheduling; old generic heavy requests normalize
+to standard. Manually adding a publish step to ordinary work is rejected.
 
-## Submit and execute
+SQLite transactions prevent two workers from claiming the same task. Opaque
+claim tokens and generations fence foreign/stale completions. Heartbeat age is
+diagnostic: ownership does not expire, become administratively held, or become
+available to another worker when a heartbeat is missed. Supervised commands
+still stop on actual service loss/rejection. The worker may resume its claim
+once it verifies the operation state.
+
+Completion receipts require a summary and `execution_stopped: true`. Ordinary
+workers record merged source/evidence and use non-force pushes, resolving main
+movement and rerunning affected checks. Use `--outcome blocked` or `failed` for
+incomplete work. Those outcomes free the worker for other tasks. To retry the
+same task, its owner supplies verified evidence:
 
 ```sh
-~/.local/bin/nova-coord add 'Build and verify the next native engine' --compute heavy --key engine-request-001
-~/.local/bin/nova-coord status
-~/.local/bin/nova-coord next
-~/.local/bin/nova-coord show TASK_ID
-~/.local/bin/nova-coord heartbeat TASK_ID --progress 'Running the acceptance suite'
-~/.local/bin/nova-coord run TASK_ID -- python3 scripts/your-check.py
-~/.local/bin/nova-coord finish TASK_ID --receipt /absolute/receipt.json
+nova-coord retry TASK_ID --receipt /absolute/stopped-attempt.json
 ```
 
-For richer requests, use `add --file task.json`:
+The receipt must contain `execution_stopped: true`, `external_state_checked:
+true` and `evidence` explaining settlement and a concrete correction. No unknown
+input/publication may be replayed. Admin `reconcile` remains for abandoned
+legacy tasks; existing holds are not silently reopened by a schema migration.
 
-```json
-{
-  "request_key": "stable-key-reused-on-retry",
-  "title": "Prepare an engine candidate",
-  "description": "Build the exact requested revision and record its acceptance evidence.",
-  "compute": "heavy",
-  "priority": 50,
-  "requirements": {"memory_gb": 20, "disk_gb": 80},
-  "dependencies": [],
-  "steps": [
-    {"name": "Build", "kind": "work", "instructions": "Use the repository's build-storage policy. Record the exact revision and artifact."},
-    {"name": "Verify", "kind": "work", "instructions": "Verify the required behavior and record evidence for that exact artifact."}
-  ]
-}
-```
+## Hourly publish tasks
 
-Routine tasks default to one `work` stage covering implementation and testing.
-`publish` takes the single global publishing slot. Older `integrate`/`desktop`
-labels remain supported as ordinary work; existing in-flight locks settle with
-their owners. A later stage stays with the same healthy, eligible worker so its
-checkout stays local; an offline owner can be replaced using recorded evidence.
-Each completed stage needs a receipt with a nonempty `summary`
-and `execution_stopped: true`, plus useful evidence and artifact references.
-Successful publication additionally needs `publication_ref`.
+A durable service timer checks each configured repository on the hour. Workers
+observe `origin/main` every two minutes using existing host Git access and
+`git ls-remote` (no checkout mutation). Stale/failed observations cannot trigger
+a release; the service waits for a fresh observation before consuming the hour.
+This also detects merges performed outside the queue. Repository configuration
+records a verified published baseline, not an assumed current branch tip.
 
-## Publishing and recovery
+When main differs from the last verified publication, the service creates a
+publish task pinned to that exact commit, available to either Mac. A stable
+repository+commit key and a transaction prevent duplicate tasks across timer
+races/restarts. Outstanding queued, running, blocked or failed publication work
+for that repository is not duplicated. New merges wait for a subsequent hourly
+check after that work resolves. This is task deduplication, not a publishing
+resource lock; there is no lock table used by claims or publishers.
 
-All publishers using this workflow must run inside a claimed `publish` step:
+Only the worker that claims the generated task publishes:
 
 ```sh
-~/.local/bin/nova-coord publish TASK_ID --receipt /new/publication-receipt.json --command python3 your-publisher.py
+nova-coord publish TASK_ID --receipt /new/publication.json --command python3 publisher.py
 ```
 
-The publisher must create the fresh receipt only after verifying the external
-result. Existing publishing scripts can call `nova-coord publish-permit`
-immediately before mutation; the wrapper sets `NOVA_COORD_TASK_ID`.
+`publish-permit` verifies ownership of that task; it does not acquire/check a
+shared lock. Preserve signing/notarization and actual public-download checks.
+Successful receipt fields are `publication_ref`, `published_commit` matching
+`release_target.commit`, and normal stopped-execution evidence. If the release
+procedure commits version metadata on main, include its verified `release_commit`
+to advance the publication baseline without creating a release loop. Do not
+include newer feature commits silently. A failed/unknown publication stays an
+unresolved task for inspection, without holding other engineering work.
 
-**The service serializes participating publishers. It cannot constrain an old
-script or administrator that bypasses it and uses independent deployment
-credentials.** Both active Mac sessions have adopted the central queue and publish protocol.
-Legacy release scripts still need to be invoked through the wrapper; they have
-not been rewritten by this standalone service deployment.
+The initial baseline is configured through admin-only
+`POST /api/repositories/configure` with repository, branch, published_commit.
+Existing configuration cannot silently reset the baseline. Worker-only
+`POST /api/repositories/observe` records fresh exact remote branch observations.
+No repository credential is added to Kubernetes, and its pod needs no GitHub
+egress. `nova-coord observe-main` performs a manual read-only observation.
 
-Claims and resource locks are committed in one SQLite transaction. Generation
-numbers and opaque tokens fence stale updates. A lease expires after 180
-seconds without a task heartbeat; the client renews every 25 seconds for a
-supervised command. Expired tasks become **held**, and their locks remain held.
-Publish failure is also held because a remote side effect may have succeeded.
-There is no claim of exactly-once external side effects and no automatic replay
-of uncertain work. This deliberately favors safety over unattended recovery.
+## Installation and deployment
 
-An administrator can reconcile only with evidence that all owned execution
-stopped and the external state was checked:
+The service is deployed with `python3 deploy/deploy.py --apply` using existing
+cluster SSH access. Source is an immutable ConfigMap; Python is digest-pinned.
+SQLite WAL lives on retained local storage, with separate 15-minute backups
+retaining96 snapshots. The service is a single durable instance, not automatic
+storage failover. Source rollback preserves the database and evidence.
 
-```json
-{
-  "action": "retry",
-  "execution_stopped": true,
-  "external_state_checked": true,
-  "evidence": "Describe verified process settlement and the actual external result."
-}
+Clients are distributed from the cluster host:
+
+```sh
+ssh pi@192.168.2.13 'cat /home/pi/.local/share/nova-coordinator/bootstrap.py' > /tmp/nova-bootstrap.py
+python3 /tmp/nova-bootstrap.py --worker oliver-mac --repository-path /actual/nova/checkout
 ```
 
-Use `--config /private/admin.json reconcile TASK_ID --file evidence.json`.
-Actions are `retry`, `complete` (advance the reconciled step), or `cancel`.
-Never infer settlement merely from an expired heartbeat or a local SSH exit.
-No user approvals or existing acceptance criteria are waived by a task claim.
+Use the actual worker name and checkout. Existing configuration, build path,
+claims and credentials are preserved on client upgrades. Do not reinstall OS
+trust just to update the client. The optional `--trust-internal-ca` flag is only
+for deliberate initial trust setup. The installer manages only its own local
+client/reporter/gateway and skill files.
 
-## Deployment and operations
+## Verification
 
-`python3 deploy/deploy.py --apply` deploys owned resources over SSH using the
-cluster host's existing kubeconfig. Source is an immutable ConfigMap and the
-Python image is pinned by digest. No image build or package download is needed
-in the pod. It runs as a non-root user without a service-account token.
+Run `python3 -m unittest discover -s tests -v`. Tests exercise atomic claims,
+engine-only scheduling, persistent stale-heartbeat ownership, worker retry
+fencing, legacy migration, HTTP identity boundaries, hourly no-change/new-change
+behavior, duplicate suppression through restart/concurrent ticks, fresh branch
+observations, exact published targets, and release metadata loop prevention.
 
-State lives on an explicitly local, retained volume (SQLite WAL is unsuitable
-for shared NFS storage). A separate NFS volume holds consistent SQLite backup
-snapshots every 15 minutes, retaining the most recent 96. This is a single
-durable instance, **not automatic failover**: losing its storage node makes the
-service unavailable until that node returns or an operator restores a backup.
-After restoring a backup, hold/reconcile all possibly active claims before
-enabling new work. Check backup logs and storage as the queue grows.
-
-The source deployment can be rolled back with Kubernetes rollout undo; source
-ConfigMaps and the database are preserved. Do not delete the namespace/PVCs as
-a rollback. Credentials and the TLS private key are in owned Kubernetes Secrets
-and ignored, restricted local deployment files. The internal CA key stays in Kubernetes. cert-manager issues 90-day server
-certificates and renews them 15 days before expiry; the server reloads renewed
-certificates within 30 seconds without a pod restart. A changed root CA still
-requires deliberate trust distribution to clients. The trust installation is
-SSL-only and does not grant code-signing trust. NodePort ingress admits the two local LAN subnets and K3s node gateway
-addresses; pod egress is denied. WAN port 80 and public routes are untouched.
-
-## API and validation
-
-Use a worker bearer token for `POST /api/worker/pulse`,
-`POST /api/worker/claim`, `POST /api/tasks/ID/heartbeat`, and
-`POST /api/tasks/ID/finish`. Read `GET /api/state` and `GET /api/tasks/ID`.
-Only the separate admin identity can `POST /api/tasks/ID/reconcile`.
-LAN users can read `/api/state`, `/api/tasks/ID` and submit tasks without
-authentication. Worker and reconciliation mutations still require their
-automatic identities and current claim tokens. Host, Origin and browser
-fetch-site checks reject cross-site requests and unknown service addresses.
-
-Run `python3 -m unittest discover -s tests -v`. The suite covers competing
-claims, equal ordinary-work access, heavy-task routing/fallback, requirements,
-dependencies, step ordering, duplicate submissions/completions, global
-publishing exclusion, stale tokens, fail-closed expiry/restart, HTTP access
-boundaries and stopping supervised commands after lost heartbeats.
-
-`tests/browser-check.cjs` uses Playwright against a running dashboard and creates
-one explicit deployment-verification task. It checks submission, details,
-search, desktop/mobile layout and JavaScript errors. Use an isolated test
-service for repeated development runs.
-
-Storage behavior follows the primary [SQLite WAL documentation](https://www.sqlite.org/wal.html)
-and [Kubernetes persistent-volume documentation](https://kubernetes.io/docs/concepts/storage/persistent-volumes/).
-
-Internal signing and renewal use the primary [cert-manager CA issuer documentation](https://cert-manager.io/docs/configuration/ca/). Browser trust was verified on the actual service with certificate verification enabled.
+`tests/browser-check.cjs` checks dashboard rendering/submission/details/search
+on an isolated service. It creates one test task, so do not use it casually
+against a production queue. Production verification should be read-only unless
+an explicit task is being submitted.

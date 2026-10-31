@@ -1,13 +1,13 @@
-"""Transactional task claims and durable, fail-closed resource ownership.
+"""Atomic task ownership and durable hourly release-task creation.
 
-Use a local filesystem, never NFS, for the SQLite database. Workers communicate
-only through this service. A missing heartbeat holds ownership until reconciled;
-it never proves an old process has stopped or makes publishing safe to retry.
+Heartbeat age is diagnostic. A taken task never becomes available just because
+a worker is quiet. There are no global resource or publishing locks.
 """
 import contextlib
 import hashlib
 import json
 import secrets
+import re
 import sqlite3
 import time
 import uuid
@@ -53,12 +53,16 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS receipts (
  task_id TEXT NOT NULL, generation INTEGER NOT NULL, step INTEGER NOT NULL,
  receipt TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY(task_id,generation,step));
+CREATE TABLE IF NOT EXISTS repositories (
+ name TEXT PRIMARY KEY, branch TEXT NOT NULL, merged_head TEXT NOT NULL,
+ published_head TEXT NOT NULL, observed_at REAL NOT NULL, next_check REAL NOT NULL,
+ last_checked REAL, last_error TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS task_queue ON tasks(status,priority,created);
 """
 
 
 DEFAULT_STEPS = [
-    {"name": "Implement and verify", "kind": "work", "instructions": "Handle the request in one session: inspect the code, implement in an isolated checkout, run meaningful checks and record the result. Preserve existing user constraints. Acquire a publish step only when ready for authorized publication. On completion, immediately pull the next queued task."},
+    {"name": "Implement and verify", "kind": "work", "instructions": "Implement, meaningfully test and merge the change in one session. Rebase and retest affected checks if main advances; never force-push main. Record the actual merged commit. DO NOT PUBLISH. The service creates separate hourly publish tasks. On completion or settled blocked execution, immediately pull the next eligible task."},
 ]
 
 
@@ -69,6 +73,14 @@ class Store:
         with self.connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
+            columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
+            if "task_type" not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'work'")
+                db.execute("UPDATE tasks SET compute='standard' WHERE compute='heavy'")
+            # Retire obsolete shared locks, retaining their evidence in events.
+            for lock in db.execute("SELECT * FROM locks").fetchall():
+                self.event(db, "service", "legacy-lock-retired", lock["task_id"], encoded(dict(lock)))
+            db.execute("DELETE FROM locks")
             for name in ("oliver-mac", "oliver-mini"):
                 db.execute("INSERT OR IGNORE INTO workers(id) VALUES(?)", (name,))
 
@@ -99,10 +111,8 @@ class Store:
                    (self.clock(), task_id, actor, kind, detail[:12000]))
 
     def expire(self, db):
-        for row in db.execute("SELECT * FROM tasks WHERE status='running' AND lease_until<=?", (self.clock(),)).fetchall():
-            db.execute("UPDATE tasks SET status='held',updated=?,progress=? WHERE id=?",
-                       (self.clock(), "Worker heartbeat expired. Confirm execution stopped before retrying or releasing resources.", row["id"]))
-            self.event(db, "service", "held", row["id"], "Lease expired; resource locks retained")
+        # Keep ownership intact; missed heartbeats are visible, not admin holds.
+        pass
 
     def public_task(self, row):
         task = dict(row)
@@ -111,6 +121,10 @@ class Store:
         for field in ("requirements", "dependencies", "steps", "result"):
             task[field] = json.loads(task[field])
         task["current_step"] = task["steps"][task["step"]] if task["step"] < len(task["steps"]) else None
+        task["execution_policy"] = ("Publish only the pinned release target; no global locks. Verify external outcome before reporting success."
+            if task["current_step"] and task["current_step"]["kind"] == "publish" else
+            "Implement, test and merge. DO NOT PUBLISH Nova from ordinary work. Only engine rebuilds are heavy. No global locks; ownership does not expire on missed heartbeat. After settled work, immediately pull again.")
+        task["heartbeat_stale"] = task["status"] == "running" and (task["lease_until"] or 0) <= self.clock()
         return task
 
     def submit(self, actor, body):
@@ -119,9 +133,13 @@ class Store:
         key = bounded(body.get("request_key"), "request_key", 160)
         title = bounded(body.get("title"), "title", 240)
         description = bounded(body.get("description", title), "description", 40000)
+        task_type = body.get("task_type", "work")
+        if task_type not in ("work", "engine_rebuild"):
+            raise Invalid("task_type must be work or engine_rebuild; publish tasks are generated hourly")
         compute = body.get("compute", "standard")
         if compute not in ("light", "standard", "heavy"):
             raise Invalid("compute must be light, standard or heavy")
+        compute = "heavy" if task_type == "engine_rebuild" else ("light" if compute == "light" else "standard")
         priority = body.get("priority", 50)
         if type(priority) is not int or not 0 <= priority <= 100:
             raise Invalid("priority must be 0–100")
@@ -146,10 +164,12 @@ class Store:
         for step in steps:
             if not isinstance(step, dict) or step.get("kind", "work") not in ("work", "publish", "integrate", "desktop"):
                 raise Invalid("Invalid step kind")
+            if step.get("kind") == "publish":
+                raise Invalid("Ordinary tasks must not publish; publication is a separate hourly task")
             normalized.append({"name": bounded(step.get("name"), "step name", 120),
                 "instructions": bounded(step.get("instructions"), "instructions", 16000), "kind": step.get("kind", "work")})
         canonical = dict(title=title, description=description, priority=priority, compute=compute,
-                         requirements=requirements, dependencies=dependencies, steps=normalized)
+                         requirements=requirements, dependencies=dependencies, steps=normalized, task_type=task_type)
         digest = hashlib.sha256(encoded(canonical).encode()).hexdigest()
         with self.transaction() as db:
             old = db.execute("SELECT * FROM tasks WHERE request_key=?", (key,)).fetchone()
@@ -166,6 +186,7 @@ class Store:
                        submitted_by,priority,compute,requirements,dependencies,steps) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                        (ident, key, digest, title, description, now, now, actor, priority, compute,
                         encoded(requirements), encoded(dependencies), encoded(normalized)))
+            db.execute("UPDATE tasks SET task_type=? WHERE id=?", (task_type, ident))
             self.event(db, actor, "submitted", ident, title)
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone())
 
@@ -231,10 +252,7 @@ class Store:
         return previous if previous and self.fits(task, previous) else None
 
     def resources(self, row, worker):
-        step = json.loads(row["steps"])[row["step"]]
-        # Legacy step labels remain readable, but only publication needs a
-        # shared lane. Each worker already owns at most one active task.
-        return ["publish"] if step["kind"] == "publish" else []
+        return []
 
     def claim(self, worker, task_id=None):
         with self.transaction() as db:
@@ -267,7 +285,7 @@ class Store:
                 self.event(db, worker, "claimed", row["id"], f"Step {row['step']+1}; generation {generation}; resources {resources}")
                 task = self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (row["id"],)).fetchone())
                 return {"task": task, "claim_token": token, "resources": resources, "heartbeat_seconds": 30}
-            return {"task": None, "reason": "No eligible step. Check capacity, dependencies, existing ownership and resource locks."}
+            return {"task": None, "reason": "No eligible task. Check capacity, dependencies and existing task ownership."}
 
     def owned(self, db, worker, ident, token, generation):
         row = db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone()
@@ -281,7 +299,7 @@ class Store:
             self.expire(db)
             row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"))
             if row["status"] != "running":
-                raise Conflict("Task is not running; stop execution and reconcile")
+                raise Conflict("Task is not running; stop execution and inspect its recorded outcome")
             progress = body.get("progress", row["progress"])
             if not isinstance(progress, str) or len(progress)>12000:
                 raise Invalid("Invalid progress")
@@ -302,6 +320,9 @@ class Store:
         with self.transaction() as db:
             self.expire(db)
             row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"))
+            target = json.loads(row["result"]).get("release_target")
+            if target:
+                receipt = {**receipt, "release_target": target}
             previous = db.execute("SELECT receipt FROM receipts WHERE task_id=? AND generation=? AND step=?",
                                   (ident,row["generation"],body.get("step"))).fetchone()
             if previous:
@@ -311,21 +332,34 @@ class Store:
             if row["status"] != "running" or body.get("step") != row["step"]:
                 raise Conflict("Task/step is not running; reconcile held outcomes separately")
             kind = json.loads(row["steps"])[row["step"]]["kind"]
-            if kind == "publish" and outcome != "completed":
-                # Failure may follow an external side effect. Never unlock it as
-                # an ordinary failed/retryable step.
-                status, next_step = "held", row["step"]
-            else:
-                next_step = row["step"] + (outcome == "completed")
-                status = ("completed" if next_step == len(json.loads(row["steps"])) else "queued") if outcome=="completed" else outcome
-                db.execute("DELETE FROM locks WHERE task_id=?", (ident,))
+            next_step = row["step"] + (outcome == "completed")
+            status = ("completed" if next_step == len(json.loads(row["steps"])) else "queued") if outcome == "completed" else outcome
             if kind == "publish" and outcome == "completed":
                 bounded(receipt.get("publication_ref"), "publication_ref", 2000)
+                target = json.loads(row["result"]).get("release_target")
+                if target:
+                    if receipt.get("published_commit") != target["commit"]:
+                        raise Invalid("published_commit must match this publish task's exact release target")
+                    db.execute("UPDATE repositories SET published_head=? WHERE name=?", (self.commit(receipt.get("release_commit", target["commit"])), target["repository"]))
+                    receipt = {**receipt, "release_target": target}
+            elif outcome == "completed" and receipt.get("merge"):
+                merge = receipt["merge"]
+                self._observe(db, merge, self.clock())
+            # Preserve the pinned target on failed/blocked receipts as well.
+            target = json.loads(row["result"]).get("release_target")
+            if target:
+                receipt = {**receipt, "release_target": target}
             db.execute("INSERT INTO receipts VALUES(?,?,?,?,?)", (ident,row["generation"],row["step"],encoded({"outcome":outcome,"receipt":receipt}),self.clock()))
             db.execute("UPDATE tasks SET status=?,step=?,updated=?,lease_until=NULL,progress=?,result=? WHERE id=?",
                        (status,next_step,self.clock(),receipt["summary"],encoded(receipt),ident))
             self.event(db,worker,status,ident,receipt["summary"])
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone())
+
+    def retry(self, worker, ident, body):
+        # Only the owning worker can recover its settled failed/blocked attempt.
+        with self.connection() as db:
+            self.owned(db, worker, ident, body.get("claim_token"), body.get("generation"))
+        return self.reconcile(worker, ident, {**body, "action": "retry"})
 
     def reconcile(self, actor, ident, body):
         evidence = bounded(body.get("evidence"), "evidence", 16000)
@@ -339,6 +373,10 @@ class Store:
             row = db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone()
             if not row or row["status"] not in ("held", "blocked", "failed"):
                 raise Conflict("Only held, blocked or failed tasks can be reconciled")
+            if actor != "admin":
+                self.owned(db, actor, ident, body.get("claim_token"), body.get("generation"))
+                if action != "retry":
+                    raise Conflict("Workers may only retry their own stopped attempts")
             step = row["step"] + (action == "complete")
             status = "cancelled" if action=="cancel" else "completed" if step==len(json.loads(row["steps"])) else "queued"
             db.execute("DELETE FROM locks WHERE task_id=?", (ident,))
@@ -346,6 +384,83 @@ class Store:
                        (status,step,self.clock(),evidence,ident))
             self.event(db,actor,"reconciled",ident,encoded({"action":action,"evidence":evidence}))
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?",(ident,)).fetchone())
+
+    @staticmethod
+    def commit(value):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise Invalid("Expected an exact 40-character commit SHA")
+        return value
+
+    def configure_repository(self, body):
+        name = bounded(body.get("repository"), "repository", 200)
+        branch = bounded(body.get("branch", "main"), "branch", 200)
+        baseline = self.commit(body.get("published_commit"))
+        with self.transaction() as db:
+            # Configuration is insert-only: never reset a publication baseline.
+            row = db.execute("SELECT * FROM repositories WHERE name=?", (name,)).fetchone()
+            if row:
+                if row["branch"] != branch:
+                    raise Conflict("Repository already tracks another branch")
+                return dict(row)
+            now = self.clock()
+            db.execute("INSERT INTO repositories(name,branch,merged_head,published_head,observed_at,next_check) VALUES(?,?,?,?,?,?)",
+                       (name, branch, baseline, baseline, now, (int(now)//3600+1)*3600))
+            self.event(db, "admin", "repository-configured", detail=name+" baseline "+baseline)
+            return dict(db.execute("SELECT * FROM repositories WHERE name=?", (name,)).fetchone())
+
+    def _observe(self, db, body, observed):
+        name = bounded(body.get("repository"), "repository", 200)
+        head = self.commit(body.get("commit"))
+        row = db.execute("SELECT * FROM repositories WHERE name=?", (name,)).fetchone()
+        if not row or body.get("branch", "main") != row["branch"]:
+            raise Invalid("Repository/branch is not configured")
+        if observed >= row["observed_at"]:
+            db.execute("UPDATE repositories SET merged_head=?,observed_at=?,last_error='' WHERE name=?", (head, observed, name))
+        return {"repository": name, "commit": head, "accepted": observed >= row["observed_at"]}
+
+    def observe_repository(self, worker, body):
+        observed = body.get("observed_at")
+        if type(observed) not in (float, int) or not self.clock()-600 <= observed <= self.clock()+30:
+            raise Invalid("Branch observation must be recent")
+        with self.transaction() as db:
+            result = self._observe(db, body, observed)
+            return result
+
+    def tick_releases(self):
+        """One durable hourly check; creates queue work, never publishes itself."""
+        with self.transaction() as db:
+            now = self.clock()
+            created = []
+            for repo in db.execute("SELECT * FROM repositories WHERE next_check<=?", (now,)).fetchall():
+                # A worker observes origin/main with its existing Git access.
+                # Retry stale observations without consuming this hourly check.
+                if repo["observed_at"] < now-600:
+                    db.execute("UPDATE repositories SET last_error='Waiting for fresh origin/main observation' WHERE name=?", (repo["name"],))
+                    continue
+                db.execute("UPDATE repositories SET next_check=?,last_checked=?,last_error='' WHERE name=?", ((int(now)//3600+1)*3600, now, repo["name"]))
+                if repo["merged_head"] == repo["published_head"]:
+                    continue
+                outstanding = db.execute("SELECT result FROM tasks WHERE task_type='publish' AND status NOT IN ('completed','cancelled')").fetchall()
+                if any(json.loads(t["result"]).get("release_target",{}).get("repository") == repo["name"] for t in outstanding):
+                    continue
+                target = {"repository": repo["name"], "branch": repo["branch"], "commit": repo["merged_head"]}
+                key = "hourly-publish:"+repo["name"]+":"+repo["merged_head"]
+                if db.execute("SELECT id FROM tasks WHERE request_key=?", (key,)).fetchone():
+                    continue
+                ident = uuid.uuid4().hex[:16]
+                title = "Publish "+repo["name"]+" at "+repo["merged_head"][:12]
+                instructions = ("Publish the merged source pinned in release_target after release validation. "
+                    "Either Mac may claim this task; there is no shared publishing lock. "
+                    "Use the normal signed/notarized release procedure; verify the public artifact before completing. "
+                    "Record published_commit equal to the pinned target and publication_ref. If release metadata is committed to main, also record release_commit after verifying it contains only the release metadata on top of this target; this becomes the published baseline and prevents an endless release loop. "
+                    "Do not incorporate later feature changes. If publication outcome is unknown, stop and inspect external state before any retry. "
+                    "After settled completion or failure, immediately pull another eligible task.")
+                steps = [{"name":"Validate and publish merged changes","kind":"publish","instructions":instructions}]
+                db.execute("""INSERT INTO tasks(id,request_key,request_hash,title,description,created,updated,submitted_by,priority,compute,requirements,dependencies,steps,result,task_type)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ident,key,hashlib.sha256(key.encode()).hexdigest(),title,instructions,now,now,"hourly-scheduler",50,"standard","{}","[]",encoded(steps),encoded({"release_target":target}),"publish"))
+                self.event(db, "hourly-scheduler", "submitted", ident, title)
+                created.append(ident)
+            return created
 
     def snapshot(self):
         with self.transaction() as db:
@@ -358,7 +473,7 @@ class Store:
                 if t["status"]=="queued":
                     t["preferred_worker"] = self.candidate(db,db.execute("SELECT * FROM tasks WHERE id=?",(t["id"],)).fetchone())
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
-                "locks":[dict(r) for r in db.execute("SELECT * FROM locks ORDER BY acquired")],
+                "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 
     def detail(self, ident):
