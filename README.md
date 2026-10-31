@@ -176,3 +176,11 @@ acceptance. Product failures and missing account access are classified separatel
 The user-set fix-attempt limit is 10 per issue for current and future feature
 and UI-tool repairs. Workers retain cumulative counts across retries/transfers;
 three used attempts leave seven. Older receipt limits remain historical evidence.
+
+Nova release tasks now include the macOS public release and an **iOS upload to
+App Store Connect only**, using the pinned source. No TestFlight distribution,
+App Review submission or public iOS release is part of this task. Completion
+requires a verified `ios_upload` receipt (status, source commit, version/build,
+upload reference and explicit no-distribution/no-review flags). Completed past
+releases remain historical; they are not retroactively marked as iOS uploads.
+Apple upload workflow: https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds/

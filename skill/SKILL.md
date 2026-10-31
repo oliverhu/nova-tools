@@ -109,6 +109,22 @@ metadata is committed on main, record its verified `release_commit` too, so that
 metadata commit does not trigger another release. Do not silently include later
 feature commits. Unknown outcomes require inspection before any retry.
 
+## iOS release upload
+
+Each Nova release task includes the normal macOS release plus an iOS archive,
+signing, validation and upload to **App Store Connect**, from the same pinned
+source. The user authorized upload only: no TestFlight distribution, tester/group
+assignment, automatic beta distribution, App Review submission or public iOS release.
+Check existing automatic distribution settings before uploading; do not silently
+change account-wide settings. Inspect existing uploads before a retry.
+
+Completion requires `ios_upload` in the release receipt: `status: "uploaded"`,
+`source_commit` matching the pinned release, `version`, `build_number`, `upload_ref`
+(Apple upload/build identity or verified receipt), `testflight_distributed: false`,
+and `submitted_for_review: false`. An archive or simulator build is not an upload.
+Record actual Apple acceptance. If either platform fails, retain partial delivery
+evidence and report incomplete delivery; avoid repeating a successful publication.
+
 ## Polling
 
 Keep the existing 15-minute queue-worker schedules. Continue active work rather

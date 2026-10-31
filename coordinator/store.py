@@ -65,6 +65,16 @@ DEFAULT_STEPS = [
     {"name": "Implement and verify", "kind": "work", "instructions": "Implement, meaningfully test and merge the change in one session. Rebase and retest affected checks if main advances; never force-push main. Record the actual merged commit. DO NOT PUBLISH. The service creates separate hourly publish tasks. On completion or settled blocked execution, immediately pull the next eligible task."},
 ]
 
+IOS_UPLOAD_POLICY = (
+    "Also archive, sign, validate and upload the iOS app from the same pinned source to App Store Connect. "
+    "Upload only: do not distribute via TestFlight, add testers/groups, enable automatic beta distribution, "
+    "submit for App Review or release the iOS app publicly. Check existing automatic distribution settings before uploading. "
+    "Verify Apple accepted the upload; record ios_upload with status='uploaded', source_commit, version, build_number, "
+    "upload_ref (Apple upload/build identity or verified upload receipt), testflight_distributed=false and submitted_for_review=false. "
+    "Inspect existing uploads before retrying to avoid duplicate builds. If one platform fails, retain the successful "
+    "platform's evidence and report incomplete delivery; do not repeat its publication blindly. "
+)
+
 
 class Store:
     def __init__(self, path, clock=time.time, lease_seconds=180):
@@ -138,6 +148,10 @@ class Store:
                 'Each retry should apply a concrete correction; preserve acceptance checks and verify prior execution settled. '
                 'At 10 unsuccessful attempts, record the remaining blocker.')
         task["heartbeat_stale"] = task["status"] == "running" and (task["lease_until"] or 0) <= self.clock()
+        if (task['task_type']=='publish' and task['status'] not in ('completed','cancelled')
+                and task['result'].get('release_target',{}).get('repository')=='oliverhu/nova-browser'):
+            task['delivery_targets'] = ['macos_public_release','ios_app_store_connect_upload_only']
+            task['execution_policy'] += ' ' + IOS_UPLOAD_POLICY
         return task
 
     def submit(self, actor, body):
@@ -432,6 +446,15 @@ class Store:
                 if target:
                     if receipt.get("published_commit") != target["commit"]:
                         raise Invalid("published_commit must match this publish task's exact release target")
+                    if target['repository']=='oliverhu/nova-browser':
+                        upload=receipt.get('ios_upload')
+                        if (not isinstance(upload,dict) or upload.get('status')!='uploaded'
+                                or upload.get('source_commit')!=target['commit']
+                                or upload.get('testflight_distributed') is not False
+                                or upload.get('submitted_for_review') is not False):
+                            raise Invalid('Verified iOS App Store Connect upload-only receipt is required')
+                        for field in ('version','build_number','upload_ref'):
+                            bounded(upload.get(field), 'ios_upload.'+field, 2000)
                     db.execute("UPDATE repositories SET published_head=?,published_task_created=? WHERE name=? AND published_task_created<=?", (self.commit(receipt.get("release_commit", target["commit"])),row["created"],target["repository"],row["created"]))
                     receipt = {**receipt, "release_target": target}
             elif outcome == "completed" and receipt.get("merge"):
@@ -544,6 +567,8 @@ class Store:
                     "Record published_commit equal to the pinned target and publication_ref. If release metadata is committed to main, also record release_commit after verifying it contains only the release metadata on top of this target; this becomes the published baseline and prevents an endless release loop. "
                     "Do not incorporate later feature changes. If publication outcome is unknown, stop and inspect external state before any retry. "
                     "After settled completion or failure, immediately pull another eligible task.")
+                if repo['name']=='oliverhu/nova-browser':
+                    instructions += ' ' + IOS_UPLOAD_POLICY
                 steps = [{"name":"Validate and publish merged changes","kind":"publish","instructions":instructions}]
                 db.execute("""INSERT INTO tasks(id,request_key,request_hash,title,description,created,updated,submitted_by,priority,compute,requirements,dependencies,steps,result,task_type)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ident,key,hashlib.sha256(key.encode()).hexdigest(),title,instructions,now,now,"hourly-scheduler",50,"standard","{}","[]",encoded(steps),encoded({"release_target":target}),"publish"))

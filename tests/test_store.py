@@ -26,7 +26,13 @@ class StoreTests(unittest.TestCase):
         t=c['task'];return {'claim_token':c['claim_token'],'generation':t['generation'],'step':t['step']}
 
     def finish(self,c,outcome='completed',**receipt):
-        t=c['task'];return self.store.finish(t['owner'],t['id'],{**self.body(c),'outcome':outcome,'receipt':{'summary':'Verified result','execution_stopped':True,**receipt}})
+        t=c['task']
+        target=t.get('result',{}).get('release_target',{})
+        if target.get('repository')=='oliverhu/nova-browser' and outcome=='completed':
+            receipt.setdefault('ios_upload',{'status':'uploaded','source_commit':target['commit'],
+                'version':'0.2.21','build_number':'21','upload_ref':'apple-upload:verified-fixture',
+                'testflight_distributed':False,'submitted_for_review':False})
+        return self.store.finish(t['owner'],t['id'],{**self.body(c),'outcome':outcome,'receipt':{'summary':'Verified result','execution_stopped':True,**receipt}})
 
     def configure(self,name='oliverhu/nova-browser'):
         return self.store.configure_repository({'repository':name,'published_commit':'a'*40})
@@ -215,6 +221,20 @@ class StoreTests(unittest.TestCase):
         done=self.finish(c,published_commit='b'*40,publication_ref='verified:ref')
         self.assertEqual(done,self.finish(c,published_commit='b'*40,publication_ref='verified:ref'))
         self.assertEqual('b'*40,self.store.snapshot()['repositories'][0]['published_head'])
+
+    def test_nova_release_requires_ios_upload_without_distribution(self):
+        self.release();c=self.store.claim('oliver-mini')
+        self.assertIn('ios_app_store_connect_upload_only',c['task']['delivery_targets'])
+        valid={'status':'uploaded','source_commit':'b'*40,'version':'0.2.21','build_number':'21',
+               'upload_ref':'apple-upload:verified-fixture','testflight_distributed':False,'submitted_for_review':False}
+        for invalid in [None,{}, {**valid,'source_commit':'c'*40},{**valid,'testflight_distributed':True},
+                        {**valid,'submitted_for_review':True},{**valid,'upload_ref':''},{**valid,'status':'archived'}]:
+            with self.assertRaises(Invalid):
+                self.finish(c,published_commit='b'*40,publication_ref='mac-release',ios_upload=invalid)
+            self.assertEqual('a'*40,self.store.snapshot()['repositories'][0]['published_head'])
+        result=self.finish(c,published_commit='b'*40,publication_ref='mac-release',ios_upload=valid)
+        self.assertEqual('completed',result['status'])
+        self.assertEqual(valid,result['result']['ios_upload'])
 
     def test_release_metadata_commit_does_not_create_endless_release(self):
         self.release();c=self.store.claim('oliver-mini')
