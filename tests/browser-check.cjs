@@ -1,0 +1,31 @@
+// Run with PLAYWRIGHT_MODULE pointing to an installed Playwright package.
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const fs=require('node:fs');
+const assert=require('node:assert/strict');
+(async()=>{
+ const browser=await chromium.launch({headless:true});
+ const page=await browser.newPage({viewport:{width:1440,height:1100},deviceScaleFactor:1});
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(process.env.COORD_UI_URL||'http://127.0.0.1:18766');
+ await page.waitForFunction(()=>document.querySelector('#connection').textContent.includes('Service connected'));
+ await page.getByRole('button',{name:'Add task'}).click();
+ await page.getByLabel('Task title',{exact:true}).fill('Verify coordinator deployment');
+ await page.getByLabel('Request & acceptance criteria',{exact:true}).fill('Verify the deployed Kubernetes service, dashboard submission, task ownership, receipts, TLS, persistence and backup. This is an infrastructure acceptance task; it does not publish a Nova app release.');
+ await page.getByRole('button',{name:'Create task'}).click();
+ await page.waitForFunction(()=>!document.querySelector('#task-dialog').open);
+ await page.getByRole('button',{name:'Verify coordinator deployment',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('#detail-dialog').open);
+ assert.equal(await page.locator('.step').count(),4);
+ await page.locator('#detail-dialog [aria-label=Close]').click();
+ await page.getByRole('searchbox').fill('no-such-task');
+ await page.waitForFunction(()=>document.querySelector('#empty h3').textContent==='No matching tasks.');
+ await page.getByRole('searchbox').fill('');
+ fs.mkdirSync('test-results',{recursive:true});
+ await page.screenshot({path:'test-results/dashboard-desktop.png',fullPage:true});
+ await page.setViewportSize({width:390,height:844});
+ await page.screenshot({path:'test-results/dashboard-mobile.png',fullPage:true});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'The page should not overflow horizontally');
+ assert.deepEqual(errors,[]);
+ await browser.close();
+ console.log(JSON.stringify({passed:true,checks:['live dashboard','create task','task details and steps','search','desktop layout','mobile layout','no uncaught JavaScript errors']}));
+})().catch(e=>{console.error(e);process.exit(1)});
