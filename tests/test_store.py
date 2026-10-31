@@ -263,6 +263,51 @@ class StoreTests(unittest.TestCase):
         self.finish(new,'blocked')
         self.assertEqual(2,self.store.detail(task['id'])['fix_attempts_used'])
 
+    def test_cancel_queued_task_preserves_history_and_blocks_pickup(self):
+        task=self.add()
+        body={'action':'cancel','generation':0,'execution_stopped':True,
+              'external_state_checked':True,'evidence':'User confirms resolved after upgrading to 0.2.21'}
+        for bad in ({k:v for k,v in body.items() if k!='generation'}, {**body,'generation':1}, {**body,'action':'complete'}):
+            with self.assertRaises(Conflict):self.store.reconcile('admin',task['id'],bad)
+        with self.assertRaises(Conflict):self.store.reconcile('oliver-mac',task['id'],body)
+        cancelled=self.store.reconcile('admin',task['id'],body)
+        self.assertEqual('cancelled',cancelled['status']);self.assertEqual(0,cancelled['generation'])
+        self.assertIsNone(cancelled['owner']);self.assertEqual(body['evidence'],cancelled['progress'])
+        detail=self.store.detail(task['id'])
+        self.assertEqual(['submitted','reconciled'],[e['kind'] for e in detail['events']])
+        self.assertEqual('cancel',json.loads(detail['events'][-1]['detail'])['action'])
+        for worker in ('oliver-mac','oliver-mini'):
+            self.assertIsNone(self.store.claim(worker,task['id'])['task'])
+
+    def test_cancel_does_not_race_past_a_worker_claim(self):
+        task=self.add()
+        body={'action':'cancel','generation':0,'execution_stopped':True,
+              'external_state_checked':True,'evidence':'User cancelled queued work'}
+        def cancel():
+            try:return self.store.reconcile('admin',task['id'],body)['status']
+            except Conflict:return 'conflict'
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            cancellation=pool.submit(cancel)
+            pickup=pool.submit(self.store.claim,'oliver-mini',task['id'])
+            outcome=cancellation.result();claim=pickup.result()
+        if outcome=='cancelled':
+            self.assertIsNone(claim['task'])
+        else:
+            self.assertEqual('running',claim['task']['status'])
+            with self.assertRaises(Conflict):self.store.reconcile('admin',task['id'],body)
+            self.store.heartbeat('oliver-mini',task['id'],self.body(claim))
+
+    def test_cancel_queued_followup_keeps_receipts_and_last_owner(self):
+        task=self.add(steps=[{'name':'First','instructions':'First step'},{'name':'Second','instructions':'Second step'}])
+        claim=self.store.claim('oliver-mac');self.finish(claim,branch='retained-source')
+        before=self.store.detail(task['id'])
+        self.assertEqual('queued',before['status'])
+        cancelled=self.store.reconcile('admin',task['id'],self.wait_body(claim,action='cancel'))
+        after=self.store.detail(task['id'])
+        self.assertEqual('cancelled',cancelled['status']);self.assertEqual(before['receipts'],after['receipts'])
+        self.assertEqual(before['result'],after['result']);self.assertEqual('oliver-mac',after['last_owner'])
+        self.assertEqual(1,after['step'])
+
     def test_concurrent_claims_one_winner(self):
         task=self.add()
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:

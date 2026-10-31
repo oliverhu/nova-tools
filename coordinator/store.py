@@ -597,8 +597,11 @@ class Store:
         with self.transaction() as db:
             self.expire(db)
             row = db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone()
-            if not row or row["status"] not in ("held", "blocked", "failed", "pending_external_approval"):
+            queued_cancel = row and row['status'] == 'queued' and action == 'cancel' and actor == 'admin'
+            if not row or (not queued_cancel and row["status"] not in ("held", "blocked", "failed", "pending_external_approval")):
                 raise Conflict("Only stopped tasks can be reconciled")
+            if queued_cancel and body.get('generation') != row['generation']:
+                raise Conflict('Queued cancellation requires the current generation; reload before cancelling')
             if 'generation' in body and body['generation'] != row['generation']:
                 raise Conflict('Task generation changed; reload before reconciliation')
             if action == 'pending_external_approval' or row['status'] == 'pending_external_approval':

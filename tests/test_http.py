@@ -53,6 +53,21 @@ class HTTPTests(unittest.TestCase):
     def test_worker_cannot_reconcile(self):
         self.assertEqual(403,self.request("/api/tasks/1234567890abcdef/reconcile","oliver-mini",{})[0])
 
+    def test_admin_can_cancel_queued_task_through_reconcile(self):
+        _,raw,_=self.request('/api/tasks',body={'request_key':'cancel-http','title':'Resolved in 0.2.21'})
+        ident=json.loads(raw)['id'];url='/api/tasks/'+ident+'/reconcile'
+        body={'action':'cancel','generation':0,'execution_stopped':True,
+              'external_state_checked':True,'evidence':'User confirms resolved in 0.2.21'}
+        for actor in (None,'oliver-mac','oliver-mini'):
+            self.assertEqual(403,self.request(url,actor,body)[0])
+        self.assertEqual(409,self.request(url,'admin',{**body,'generation':1})[0])
+        code,raw,_=self.request(url,'admin',body)
+        self.assertEqual(200,code);self.assertEqual('cancelled',json.loads(raw)['status'])
+        _,raw,_=self.request('/api/tasks/'+ident)
+        detail=json.loads(raw)
+        self.assertEqual(0,detail['generation']);self.assertEqual([],detail['receipts'])
+        self.assertEqual(body['evidence'],detail['progress'])
+
     def test_workflow_through_http(self):
         code,body,_=self.request("/api/tasks","oliver-mac",{"request_key":"http-test","title":"HTTP task","steps":[{"name":"Check","instructions":"Verify end-to-end"}]})
         self.assertEqual(200,code);task=json.loads(body)

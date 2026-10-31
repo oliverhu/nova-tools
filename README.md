@@ -218,3 +218,13 @@ reconstructs previous host changes from claim events and preserves receipts.
 Older cumulative receipt aliases are translated using the assignment baseline;
 new workers should use the per-assignment `fix_attempts_used` field. Failed
 unknown outcomes and human holds retain explicit reconciliation.
+
+## Cancel queued work
+
+Administrators can cancel a queued task through the existing
+`POST /api/tasks/ID/reconcile` endpoint (or `nova-coord reconcile ID --file FILE`).
+Provide `action: "cancel"`, the current `generation`, `execution_stopped: true`,
+`external_state_checked: true`, and the user's cancellation reason in `evidence`.
+Cancellation preserves the task, receipts and audit history. The transaction
+rejects cancellation if a worker has already claimed the task; running work
+keeps its ownership. Workers and anonymous dashboard clients cannot cancel.
