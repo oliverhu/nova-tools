@@ -130,12 +130,12 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([],self.store.tick_releases())
         self.assertEqual(1,len(self.store.snapshot()['tasks']))
 
-    def test_new_merges_during_publish_wait_for_next_hour(self):
+    def test_new_merges_create_independent_task_at_next_hour(self):
         ident=self.release();c=self.store.claim('oliver-mini')
-        self.now=7200;self.observe('c');self.assertEqual([],self.store.tick_releases())
+        self.now=7200;self.observe('c');self.assertEqual(1,len(self.store.tick_releases()))
         self.finish(c,published_commit='b'*40,publication_ref='https://example.test/release')
         self.assertEqual([],self.store.tick_releases())
-        self.now=10800;self.observe('c');self.assertEqual(1,len(self.store.tick_releases()))
+        self.now=10800;self.observe('c');self.assertEqual([],self.store.tick_releases())
 
     def test_no_global_publish_lock(self):
         first=self.release();second=self.release('other/repo')
@@ -146,7 +146,8 @@ class StoreTests(unittest.TestCase):
     def test_failed_publication_not_automatically_repeated(self):
         self.release();c=self.store.claim('oliver-mac');t=self.finish(c,'failed')
         self.assertEqual('failed',t['status']);self.assertIn('release_target',t['result'])
-        self.now=7200;self.observe('c');self.assertEqual([],self.store.tick_releases())
+        self.now=7200;self.observe('b');self.assertEqual([],self.store.tick_releases())
+        self.now=10800;self.observe('c');self.assertEqual(1,len(self.store.tick_releases()))
         self.add('unrelated');self.pulse();self.assertIsNotNone(self.store.claim('oliver-mac')['task'])
 
     def test_success_requires_exact_target_and_verified_reference(self):
@@ -169,6 +170,14 @@ class StoreTests(unittest.TestCase):
         self.observe('c');self.observe('b',at=self.now-10)
         self.assertEqual('c'*40,self.store.snapshot()['repositories'][0]['merged_head'])
         self.assertEqual(1,len(self.store.tick_releases()))
+
+    def test_late_old_receipt_does_not_regress_published_baseline(self):
+        self.release();old=self.store.claim('oliver-mini')
+        self.now=7200;self.observe('c');self.pulse();new_id=self.store.tick_releases()[0]
+        new=self.store.claim('oliver-mac',new_id)
+        self.finish(new,published_commit='c'*40,publication_ref='new:ref')
+        self.finish(old,published_commit='b'*40,publication_ref='historical:ref')
+        self.assertEqual('c'*40,self.store.snapshot()['repositories'][0]['published_head'])
 
     def test_configuration_does_not_reset_published_baseline(self):
         self.release();c=self.store.claim('oliver-mini');self.finish(c,published_commit='b'*40,publication_ref='ref')

@@ -52,8 +52,9 @@ the last verified publication. The background clients observe origin/main using
 their existing Git access, without modifying checkouts. The service creates a
 single deduplicated publish task with an exact `release_target`; either Mac can
 claim it. It does not build or publish by itself, and there is no publish lock.
-An outstanding publication for that repository is not duplicated; later merges
-are picked up by a later hourly check after the outstanding task is resolved.
+The same repository/commit is not queued twice. A later merged commit gets its
+own task at the next hourly check, even if an earlier task is still running or
+failed. Workers check actual release state and never downgrade a newer release.
 
 Only a claimed publish task may run the normal signed/notarized release flow.
 Use `publish ID --receipt /new/receipt.json --command ...` or the existing

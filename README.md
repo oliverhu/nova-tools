@@ -80,10 +80,11 @@ records a verified published baseline, not an assumed current branch tip.
 When main differs from the last verified publication, the service creates a
 publish task pinned to that exact commit, available to either Mac. A stable
 repository+commit key and a transaction prevent duplicate tasks across timer
-races/restarts. Outstanding queued, running, blocked or failed publication work
-for that repository is not duplicated. New merges wait for a subsequent hourly
-check after that work resolves. This is task deduplication, not a publishing
-resource lock; there is no lock table used by claims or publishers.
+races/restarts. The same repository/commit is not queued twice. A new merged commit gets its own
+task at the next hourly check, regardless of an earlier publication task. Workers
+check the actual public release and must not downgrade it. An out-of-order old
+receipt cannot regress the stored publication baseline. There is no resource
+lock, per-repository publication gate, or lock table used by claims/publishers.
 
 Only the worker that claims the generated task publishes:
 

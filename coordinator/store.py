@@ -77,6 +77,9 @@ class Store:
             if "task_type" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'work'")
                 db.execute("UPDATE tasks SET compute='standard' WHERE compute='heavy'")
+            repo_columns = {r[1] for r in db.execute("PRAGMA table_info(repositories)")}
+            if "published_task_created" not in repo_columns:
+                db.execute("ALTER TABLE repositories ADD COLUMN published_task_created REAL NOT NULL DEFAULT 0")
             # Retire obsolete shared locks, retaining their evidence in events.
             for lock in db.execute("SELECT * FROM locks").fetchall():
                 self.event(db, "service", "legacy-lock-retired", lock["task_id"], encoded(dict(lock)))
@@ -340,7 +343,7 @@ class Store:
                 if target:
                     if receipt.get("published_commit") != target["commit"]:
                         raise Invalid("published_commit must match this publish task's exact release target")
-                    db.execute("UPDATE repositories SET published_head=? WHERE name=?", (self.commit(receipt.get("release_commit", target["commit"])), target["repository"]))
+                    db.execute("UPDATE repositories SET published_head=?,published_task_created=? WHERE name=? AND published_task_created<=?", (self.commit(receipt.get("release_commit", target["commit"])),row["created"],target["repository"],row["created"]))
                     receipt = {**receipt, "release_target": target}
             elif outcome == "completed" and receipt.get("merge"):
                 merge = receipt["merge"]
@@ -440,9 +443,6 @@ class Store:
                 db.execute("UPDATE repositories SET next_check=?,last_checked=?,last_error='' WHERE name=?", ((int(now)//3600+1)*3600, now, repo["name"]))
                 if repo["merged_head"] == repo["published_head"]:
                     continue
-                outstanding = db.execute("SELECT result FROM tasks WHERE task_type='publish' AND status NOT IN ('completed','cancelled')").fetchall()
-                if any(json.loads(t["result"]).get("release_target",{}).get("repository") == repo["name"] for t in outstanding):
-                    continue
                 target = {"repository": repo["name"], "branch": repo["branch"], "commit": repo["merged_head"]}
                 key = "hourly-publish:"+repo["name"]+":"+repo["merged_head"]
                 if db.execute("SELECT id FROM tasks WHERE request_key=?", (key,)).fetchone():
@@ -451,7 +451,7 @@ class Store:
                 title = "Publish "+repo["name"]+" at "+repo["merged_head"][:12]
                 instructions = ("Publish the merged source pinned in release_target after release validation. "
                     "Either Mac may claim this task; there is no shared publishing lock. "
-                    "Use the normal signed/notarized release procedure; verify the public artifact before completing. "
+                    "Use the normal signed/notarized release procedure; verify the public artifact before completing. Check the current public release before publishing and never downgrade a newer release; report a superseded target as blocked with exact evidence instead. "
                     "Record published_commit equal to the pinned target and publication_ref. If release metadata is committed to main, also record release_commit after verifying it contains only the release metadata on top of this target; this becomes the published baseline and prevents an endless release loop. "
                     "Do not incorporate later feature changes. If publication outcome is unknown, stop and inspect external state before any retry. "
                     "After settled completion or failure, immediately pull another eligible task.")
