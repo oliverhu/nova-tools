@@ -22,6 +22,7 @@ def main():
     p.add_argument("--config",type=Path,required=True)
     p.add_argument("--build-path",type=Path)
     p.add_argument("--no-start",action="store_true")
+    p.add_argument("--trust-internal-ca",action="store_true",help="Trust the public internal CA for SSL in the login keychain")
     args=p.parse_args()
     config=json.loads(args.config.read_text())
     if config.get("worker") not in ("oliver-mini","oliver-mac"):
@@ -36,8 +37,14 @@ def main():
                 shutil.copy2(source,target)
     cfg=Path.home()/".config/nova-coordinator"
     cfg.mkdir(parents=True,exist_ok=True,mode=0o700)
-    shutil.copy2(config["ca_file"],cfg/"ca.crt")
+    if Path(config['ca_file']).resolve() != (cfg/'ca.crt').resolve():
+        shutil.copy2(config["ca_file"],cfg/"ca.crt")
     config["ca_file"]=str(cfg/"ca.crt")
+    root_ca=config.get('root_ca_file')
+    if root_ca:
+        if Path(root_ca).resolve() != (cfg/'internal-root.crt').resolve():
+            shutil.copy2(root_ca,cfg/'internal-root.crt')
+        config['root_ca_file']=str(cfg/'internal-root.crt')
     if args.build_path:config["build_path"]=str(args.build_path)
     config.setdefault("disk_reserve_gb",50)
     config.setdefault("capabilities",["macos","development"])
@@ -57,15 +64,23 @@ def main():
             plist=agents/(label+".plist")
             payload={"Label":label,"ProgramArguments":[sys.executable,"-m","coordinator.client",mode],
                 "WorkingDirectory":str(destination),"RunAtLoad":True,"KeepAlive":True,"ThrottleInterval":15,
-                "EnvironmentVariables":{"PYTHONDONTWRITEBYTECODE":"1","PYTHONUNBUFFERED":"1","PATH":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/oliverhu/.local/bin"},
+                "EnvironmentVariables":{"PYTHONDONTWRITEBYTECODE":"1","PYTHONUNBUFFERED":"1","PATH":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:"+str(binpath)},
                 "StandardOutPath":str(logs/(mode+".log")),"StandardErrorPath":str(logs/(mode+".log"))}
             plist.write_bytes(plistlib.dumps(payload));plist.chmod(0o600)
             domain="gui/"+str(os.getuid())
             subprocess.run(["launchctl","bootout",domain+"/"+label],capture_output=True)
             subprocess.run(["launchctl","bootstrap",domain,str(plist)],check=True)
     print("Installed client for "+config["worker"])
-    print("Dashboard: http://127.0.0.1:18766")
+    print("Dashboard: "+config['url'])
     print("CLI: "+str(launcher))
+    if args.trust_internal_ca:
+        if sys.platform!='darwin' or not config.get('root_ca_file'):
+            raise RuntimeError('macOS and a verified root_ca_file are required to install browser trust')
+        # Chrome and SecureTransport do not consistently honor roots with a
+        # policy-string constraint; normal SSL-only CA trust works in both.
+        subprocess.run(['/usr/bin/security','add-trusted-cert','-r','trustRoot','-p','ssl',
+            '-k',str(Path.home()/'Library/Keychains/login.keychain-db'),config['root_ca_file']],check=True)
+        print('Installed SSL trust for the Nova internal CA')
 
 
 if __name__=="__main__":main()

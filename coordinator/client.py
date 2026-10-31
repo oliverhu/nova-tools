@@ -41,7 +41,7 @@ class Client:
             raise RuntimeError(f"Service rejected request ({e.code}): {e.read().decode()}") from None
 
     def pulse(self):
-        memory=int(subprocess.check_output(["sysctl","-n","hw.memsize"]))/(1024**3) if sys.platform=="darwin" else 0
+        memory=int(subprocess.check_output(["/usr/sbin/sysctl","-n","hw.memsize"]))/(1024**3) if sys.platform=="darwin" else 0
         build_path=self.config.get("build_path",str(Path.home()))
         # Missing external storage must not be substituted with internal disk.
         disk=shutil.disk_usage(build_path).free/(1024**3) if Path(build_path).is_dir() else 0

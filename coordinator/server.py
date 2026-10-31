@@ -1,4 +1,4 @@
-"""Authenticated HTTPS API and dashboard; no third-party runtime dependencies."""
+"""Private LAN dashboard with automatic worker identity and internal HTTPS."""
 import argparse
 import json
 import mimetypes
@@ -18,9 +18,22 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 64
 
-    def __init__(self, address, store, credentials, web):
+    def __init__(self, address, store, credentials, web, allowed_hosts=None):
         self.store, self.credentials, self.web = store, credentials, Path(web)
+        self.tls_context = None
         super().__init__(address, Handler)
+        self.allowed_hosts = set(allowed_hosts or [f"127.0.0.1:{self.server_port}", f"localhost:{self.server_port}"])
+
+    def get_request(self):
+        connection, address = super().get_request()
+        if self.tls_context is not None:
+            connection.settimeout(10)
+            try:
+                connection = self.tls_context.wrap_socket(connection, server_side=True)
+            except BaseException:
+                connection.close()
+                raise
+        return connection, address
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -67,14 +80,18 @@ class Handler(BaseHTTPRequestHandler):
         path=self.path.split("?",1)[0]
         if self.command=="GET" and path=="/healthz":
             with self.server.store.connection() as db:
-                db.execute("SELECT 1").fetchone()
+                db.execute("SELECT COUNT(*) FROM workers").fetchone()
             return self.respond(200,{"ok":True})
+        if self.headers.get('Host','').lower() not in self.server.allowed_hosts:
+            return self.respond(403,{'error':'Unknown service address'})
+        if self.headers.get('Sec-Fetch-Site') not in (None,'same-origin','none'):
+            return self.respond(403,{'error':'Cross-site requests are not allowed'})
         if self.command=="GET" and path in ("/","/app.js","/style.css"):
             file=self.server.web/("index.html" if path=="/" else path[1:])
             return self.respond(200,file.read_bytes(),mimetypes.guess_type(str(file))[0] or "text/plain")
-        actor=self.identity()
-        if actor is None:
-            return self.respond(401,{"error":"Authentication required"})
+        # The LAN dashboard has no sign-in or access-token prompt. Worker
+        # mutations retain their automatic machine identity and claim fencing.
+        actor=self.identity() or 'dashboard'
         if self.headers.get("Origin"):
             origin=self.headers["Origin"]
             if origin not in ("https://"+self.headers.get("Host",""),"http://"+self.headers.get("Host","")):
@@ -138,7 +155,11 @@ def main():
         p.error("Three distinct credentials of at least 32 characters are required")
     if not args.cert and args.host not in ("127.0.0.1","localhost"):
         p.error("TLS is required for network listeners")
-    server=Server((args.host,args.port),Store(args.db),credentials,args.web)
+    default_hosts=[f'192.168.2.{n}:31866' for n in (2,11,12,13,24)]
+    default_hosts += ['nova-coordinator.nova-coordinator.svc.cluster.local','nova-coordinator.nova-coordinator.svc.cluster.local:443']
+    default_hosts += [f'127.0.0.1:{args.port}',f'localhost:{args.port}']
+    hosts=os.environ.get('COORD_ALLOWED_HOSTS',','.join(default_hosts)).split(',')
+    server=Server((args.host,args.port),Store(args.db),credentials,args.web,allowed_hosts=hosts)
     backup_dir=os.environ.get("COORD_BACKUPS")
     if backup_dir:
         def backups():
@@ -156,10 +177,36 @@ def main():
                 time.sleep(900)
         threading.Thread(target=backups,daemon=True).start()
     if args.cert:
-        ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.minimum_version=ssl.TLSVersion.TLSv1_2
-        ctx.load_cert_chain(args.cert,args.key)
-        server.socket=ctx.wrap_socket(server.socket,server_side=True)
+        def certificate_paths():
+            # Kubernetes atomically replaces ..data. Bind both files to the
+            # same generation so renewal cannot mix an old key and new cert.
+            generation=Path(args.cert).parent/'..data'
+            if generation.exists():
+                root=generation.resolve()
+                return root/Path(args.cert).name,root/Path(args.key).name
+            return Path(args.cert),Path(args.key)
+        def load_context():
+            cert,key=certificate_paths()
+            context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version=ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(cert,key)
+            return context,(str(cert),cert.stat().st_mtime_ns,key.stat().st_mtime_ns)
+        server.tls_context,signature=load_context()
+        def reload_certificates():
+            previous=signature
+            while True:
+                time.sleep(30)
+                try:
+                    cert,key=certificate_paths()
+                    current=(str(cert),cert.stat().st_mtime_ns,key.stat().st_mtime_ns)
+                    if current!=previous:
+                        context,current=load_context()
+                        server.tls_context=context
+                        previous=current
+                        print('Internal HTTPS certificate renewed',flush=True)
+                except Exception:
+                    print('Certificate reload deferred; previous valid context retained',flush=True)
+        threading.Thread(target=reload_certificates,daemon=True).start()
     print(f"Nova coordination service listening on {args.host}:{args.port}",flush=True)
     server.serve_forever()
 

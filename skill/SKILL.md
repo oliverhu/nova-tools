@@ -15,8 +15,10 @@ remain in force.
 
 Use `~/.local/bin/nova-coord`. Credentials are already in
 `~/.config/nova-coordinator/client.json`; never display that file or claim-token
-files. The dashboard is at http://127.0.0.1:18766 through a local authenticated
-gateway to the cluster. `status` reports actual workers, tasks and locks.
+files. The dashboard is at https://192.168.2.13:31866 and opens directly on the
+LAN without a sign-in or access-token prompt. The certificate is signed by the internal Nova CA; the client verifies it with
+its installed CA bundle. Browser trust is a separate one-time macOS setup. Automatic machine identity protects task claims;
+`status` reports actual workers, tasks and locks.
 
 For a new user request, submit a task with `add --file /absolute/task.json`.
 The JSON contains `request_key` (a stable unique key reused on retries), `title`,
@@ -26,13 +28,19 @@ work. Optional `requirements` can specify `memory_gb`, `disk_gb`, `cpus`,
 `capabilities`, or a hard `worker` binding for machine-specific work.
 Task dependencies are existing task IDs in `dependencies`.
 
-The default steps are Plan, Implement, Verify and Deliver. Tailor `steps` when
-the request needs another workflow: each has `name`, `instructions` and `kind`.
-Kinds are `work`, `integrate` (exclusive main lane), `desktop` (exclusive local
-desktop lane), and `publish` (one global publishing lane). Include a publish
-step only when publication is actually requested/authorized. Routine delivery
-steps must not publish. Any operation changing a production release, deployment
-or release pointer belongs in a publish step.
+A routine task has one Implement and verify stage, handled by one session.
+Do not split planning, coding and testing into coordination handoffs or add
+coordinator review/approval stages. Use `work` for development and a final
+`publish` step when publication is authorized. Publishing is the only shared
+exclusive lane; older `integrate` and `desktop` labels remain readable as work.
+Any operation changing a production release, deployment or release pointer
+belongs in a publish step, acquired only when ready to publish.
+
+Existing worker sessions check the queue every 15 minutes while idle. Continue
+current claimed work instead of starting a duplicate. After finishing a task,
+immediately pull another in the same run; do not wait for the next scheduled
+check. If there is no eligible work, stop quietly until the next wake. Keep
+the existing worker schedule; do not create a new schedule per request.
 
 Pull with `next` or `next --task ID`. Only execute after a returned task claim;
 the service may route heavy work to the mini. Read the returned step and prior
@@ -50,7 +58,10 @@ Finish with `finish ID --receipt /absolute/receipt.json [--outcome completed|blo
 The receipt needs `summary` and `execution_stopped:true` only after all owned
 operations have settled; add evidence/commit/artifact references as appropriate.
 Successful publishing also requires `publication_ref`, the verified external
-result. The service then exposes the next step. Unknown publication outcomes
+result. For a task with a remaining publish step, immediately try `next --task ID`;
+the service keeps that stage with the same healthy worker. If the publish slot
+is busy, leave the stage queued and pull other eligible work. After the task
+completes, immediately use `next` for the next task. Unknown publication outcomes
 remain held, preserving the global lock. Do not retry an unknown publication.
 Use `publish ID --receipt /new/receipt.json --command command args...` to run
 a publisher under the lease watchdog and record its fresh receipt. Existing

@@ -131,10 +131,33 @@ class StoreTests(unittest.TestCase):
         plan=self.store.claim("oliver-mini")
         self.assertEqual("Plan",plan["task"]["current_step"]["name"])
         self.finish(plan)
-        ship=self.store.claim("oliver-mac")
+        self.assertIsNone(self.store.claim("oliver-mac")["task"])
+        ship=self.store.claim("oliver-mini")
         self.assertEqual("Ship",ship["task"]["current_step"]["name"])
         self.assertEqual(["publish"],ship["resources"])
         self.assertEqual("completed",self.finish(ship)["status"])
+
+    def test_default_request_finishes_without_intermediate_handoffs(self):
+        self.store.submit("dashboard",{"request_key":"bug","title":"Fix bug"})
+        claim=self.store.claim("oliver-mac")
+        self.assertEqual([],claim["resources"])
+        self.assertEqual("completed",self.finish(claim)["status"])
+
+    def test_publish_lock_does_not_block_other_development(self):
+        self.add("release","publish")
+        self.store.claim("oliver-mac")
+        self.add("development","integrate")
+        claim=self.store.claim("oliver-mini")
+        self.assertIsNotNone(claim["task"])
+        self.assertEqual([],claim["resources"])
+
+    def test_following_stage_can_transfer_when_owner_offline(self):
+        task=self.add(steps=[{"name":"Work","instructions":"Implement"},{"name":"Publish","kind":"publish","instructions":"Publish"}])
+        self.finish(self.store.claim("oliver-mac"))
+        self.assertIsNone(self.store.claim("oliver-mini")["task"])
+        self.now+=91
+        self.store.pulse("oliver-mini",{"capacity":{"memory_gb":24,"disk_gb":500,"cpus":12}})
+        self.assertEqual(task["id"],self.store.claim("oliver-mini")["task"]["id"])
 
     def test_foreign_worker_cannot_heartbeat(self):
         t=self.add();c=self.store.claim("oliver-mac")

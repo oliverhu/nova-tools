@@ -6,6 +6,7 @@ Source ConfigMaps are immutable; the runtime is pinned by digest. State uses a
 retained local volume; snapshots use a separate NFS volume.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -47,13 +48,41 @@ class Cluster:
 
 
 def obj(kind,name,namespace=NS,**fields):
-    api={"Deployment":"apps/v1","StorageClass":"storage.k8s.io/v1","NetworkPolicy":"networking.k8s.io/v1"}.get(kind,"v1")
+    api={"Deployment":"apps/v1","StorageClass":"storage.k8s.io/v1","NetworkPolicy":"networking.k8s.io/v1",'Issuer':'cert-manager.io/v1','Certificate':'cert-manager.io/v1'}.get(kind,"v1")
     return {"apiVersion":api,"kind":kind,"metadata":{"name":name,"labels":LABELS,**({"namespace":namespace} if namespace else {})},**fields}
 
 
 def secure_file(path,text):
     fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
     with os.fdopen(fd,"w") as f:f.write(text)
+
+
+def prepare_tls(cluster,runtime):
+    """Generate keys inside Kubernetes; distribute only the public CA."""
+    bootstrap=obj('Issuer',NS+'-bootstrap',spec={'selfSigned':{}})
+    root=obj('Certificate',NS+'-root',spec={'isCA':True,'commonName':'Nova Internal Coordination CA',
+        'subject':{'organizations':['Nova Internal Services']},'secretName':NS+'-ca-keypair',
+        'secretTemplate':{'labels':LABELS},'duration':'87600h','renewBefore':'8760h',
+        'privateKey':{'algorithm':'RSA','size':3072,'rotationPolicy':'Never'},
+        'usages':['cert sign','crl sign'],'issuerRef':{'name':NS+'-bootstrap','kind':'Issuer'}})
+    issuer=obj('Issuer',NS+'-internal-ca',spec={'ca':{'secretName':NS+'-ca-keypair'}})
+    leaf=obj('Certificate',NS+'-server',spec={'secretName':NS+'-tls-v2','secretTemplate':{'labels':LABELS},
+        'commonName':'nova-coordinator.nova-coordinator.svc.cluster.local',
+        'dnsNames':['nova-coordinator.nova-coordinator.svc.cluster.local'],
+        'ipAddresses':['192.168.2.'+str(n) for n in [2,11,12,13,24]],
+        'duration':'2160h','renewBefore':'360h','privateKey':{'algorithm':'RSA','size':3072,'rotationPolicy':'Always'},
+        'usages':['digital signature','key encipherment','server auth'],'issuerRef':{'name':NS+'-internal-ca','kind':'Issuer'}})
+    for item in [bootstrap,root]:cluster.apply(item)
+    cluster.run(['-n',NS,'wait','--for=condition=Ready','certificate/'+NS+'-root','--timeout=60s'])
+    for item in [issuer,leaf]:cluster.apply(item)
+    cluster.run(['-n',NS,'wait','--for=condition=Ready','certificate/'+NS+'-server','--timeout=60s'])
+    root_pem=base64.b64decode(cluster.run(['-n',NS,'get','secret',NS+'-ca-keypair','-o','jsonpath={.data.tls\\.crt}'])).decode()
+    legacy=cluster.run(['-n',NS,'get','secret',NS+'-tls','--ignore-not-found','-o','jsonpath={.data.tls\\.crt}'])
+    bundle=root_pem+(base64.b64decode(legacy).decode() if legacy else '')
+    secure_file(runtime/'internal-root.crt',root_pem)
+    secure_file(runtime/'ca-bundle.crt',bundle)
+    cluster.apply(obj('ConfigMap',NS+'-trust',data={'root.crt':root_pem,'ca-bundle.crt':bundle,'client-version':'2'}))
+    print('Internal CA and automatically renewed server certificate are ready',flush=True)
 
 
 def manifests():
@@ -80,7 +109,7 @@ def manifests():
                         {"name":"tls","mountPath":"/run/tls","readOnly":True},{"name":"state","mountPath":"/data"},{"name":"backups","mountPath":"/backups"},{"name":"tmp","mountPath":"/tmp"}]}],
                 "volumes":[{"name":"source","configMap":{"name":code_name,"items":[{"key":k,"path":v[0]} for k,v in files.items()]}},
                     {"name":"auth","secret":{"secretName":NS+"-auth","defaultMode":288}},
-                    {"name":"tls","secret":{"secretName":NS+"-tls","defaultMode":288}},
+                    {"name":"tls","secret":{"secretName":NS+"-tls-v2","defaultMode":288}},
                     {"name":"state","persistentVolumeClaim":{"claimName":NS+"-state"}},
                     {"name":"backups","persistentVolumeClaim":{"claimName":NS+"-backups"}},
                     {"name":"tmp","emptyDir":{"sizeLimit":"16Mi"}}]}}})
@@ -102,13 +131,16 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host",default="pi@192.168.2.13")
     parser.add_argument("--apply",action="store_true")
+    parser.add_argument('--prepare-tls',action='store_true',help='Prepare certificates and public trust before changing the running service')
     args=parser.parse_args()
     cluster=Cluster(args.host)
     resources,digest=manifests()
     runtime=ROOT/".runtime";runtime.mkdir(mode=0o700,exist_ok=True)
-    if not args.apply:
+    if not args.apply and not args.prepare_tls:
         print(json.dumps({"namespace":NS,"objects":[x["kind"]+"/"+x["metadata"]["name"] for x in resources],"sha256":digest},indent=2));return
     cluster.apply(obj("Namespace",NS,namespace=None))
+    prepare_tls(cluster,runtime)
+    if args.prepare_tls:return
     auth_obj=obj("Secret",NS+"-auth",type="Opaque")
     auth_path=runtime/"credentials.json"
     if cluster.existing(auth_obj):
@@ -122,22 +154,11 @@ def main():
     else:
         if not auth_path.exists():secure_file(auth_path,json.dumps({name:secrets.token_urlsafe(40) for name in ("admin","oliver-mac","oliver-mini")}))
         cluster.apply({**auth_obj,"stringData":{"credentials.json":auth_path.read_text()}})
-    cert=runtime/"tls.crt";key=runtime/"tls.key"
-    tls_obj=obj("Secret",NS+"-tls",type="kubernetes.io/tls")
-    if not cluster.existing(tls_obj):
-        if not cert.exists():
-            subprocess.run(["openssl","req","-x509","-newkey","rsa:3072","-sha256","-nodes","-days","365","-keyout",str(key),"-out",str(cert),
-                "-subj","/CN=nova-coordinator","-addext","subjectAltName=IP:192.168.2.13,IP:192.168.2.11,IP:192.168.2.12,IP:192.168.2.24,IP:192.168.2.2,DNS:nova-coordinator.nova-coordinator.svc.cluster.local"],check=True,capture_output=True)
-            key.chmod(0o600)
-        cluster.apply({**tls_obj,"stringData":{"tls.crt":cert.read_text(),"tls.key":key.read_text()}})
-    elif not cert.exists():
-        import base64
-        raw=cluster.run(["-n",NS,"get","secret",NS+"-tls","-o","jsonpath={.data.tls\\.crt}"])
-        secure_file(cert,base64.b64decode(raw).decode())
     for resource in resources:cluster.apply(resource)
     credentials=json.loads(auth_path.read_text())
     for actor,token in credentials.items():
-        secure_file(runtime/(actor+".json"),json.dumps({"url":"https://192.168.2.13:31866","worker":actor,"token":token,"ca_file":str(cert)},indent=2))
+        secure_file(runtime/(actor+".json"),json.dumps({"url":"https://192.168.2.13:31866","worker":actor,"token":token,
+            "ca_file":str(runtime/'ca-bundle.crt'),'root_ca_file':str(runtime/'internal-root.crt')},indent=2))
     secure_file(runtime/"deployment.json",json.dumps({"namespace":NS,"sha256":digest,"url":"https://192.168.2.13:31866"},indent=2))
     subprocess.run([sys.executable,str(ROOT/'scripts/package-client.py'),'--host',args.host],check=True)
     print("Deployment applied. Check rollout before using https://192.168.2.13:31866",flush=True)

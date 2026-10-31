@@ -58,10 +58,7 @@ CREATE INDEX IF NOT EXISTS task_queue ON tasks(status,priority,created);
 
 
 DEFAULT_STEPS = [
-    {"name": "Plan", "kind": "work", "instructions": "Read the request and repository guidance. Record acceptance criteria, dependencies, branch/worktree and exact verification steps. Preserve existing user restrictions."},
-    {"name": "Implement", "kind": "work", "instructions": "Implement this task in its isolated checkout. Keep unrelated work intact. Record the branch, base and commit; do not publish or modify shared main."},
-    {"name": "Verify", "kind": "work", "instructions": "Run meaningful checks for the requested behavior. Record commands, outcomes, commit and evidence. Report remaining limits honestly; a build alone is not behavioral acceptance."},
-    {"name": "Deliver", "kind": "work", "instructions": "Report the verified result and remaining delivery requirements. Source completion is not a published release. Publishing requires a separate publish step and the service's global publish lock."},
+    {"name": "Implement and verify", "kind": "work", "instructions": "Handle the request in one session: inspect the code, implement in an isolated checkout, run meaningful checks and record the result. Preserve existing user constraints. Acquire a publish step only when ready for authorized publication. On completion, immediately pull the next queued task."},
 ]
 
 
@@ -208,6 +205,11 @@ class Store:
         workers = [w for w in workers if self.fits(task, w)]
         if not workers:
             return None
+        # Keep subsequent stages with the session that owns the checkout.
+        # An unavailable owner can be replaced using its recorded evidence.
+        previous = self.available_owner(db, task)
+        if previous:
+            return previous["id"] if any(w["id"] == previous["id"] for w in workers) else None
         # Heavy work stays queued for a healthy but busy mini. Fall back to the
         # Mac when the mini is offline/paused or cannot meet hard requirements.
         if task["compute"] == "heavy":
@@ -223,9 +225,16 @@ class Store:
             workers.sort(key=lambda w: (w["last_claim"], w["id"]))
         return workers[0]["id"]
 
+    def available_owner(self, db, task):
+        previous = db.execute("SELECT * FROM workers WHERE id=? AND paused=0 AND seen>?",
+                              (task["owner"], self.clock()-90)).fetchone()
+        return previous if previous and self.fits(task, previous) else None
+
     def resources(self, row, worker):
         step = json.loads(row["steps"])[row["step"]]
-        return {"work": [], "publish": ["publish"], "integrate": ["main"], "desktop": ["desktop:" + worker]}[step["kind"]]
+        # Legacy step labels remain readable, but only publication needs a
+        # shared lane. Each worker already owns at most one active task.
+        return ["publish"] if step["kind"] == "publish" else []
 
     def claim(self, worker, task_id=None):
         with self.transaction() as db:
@@ -239,6 +248,9 @@ class Store:
                     continue
                 own = db.execute("SELECT * FROM workers WHERE id=? AND paused=0 AND seen>?", (worker,self.clock()-90)).fetchone()
                 if not own or not self.fits(row,own) or db.execute("SELECT id FROM tasks WHERE owner=? AND status IN ('running','held')", (worker,)).fetchone():
+                    continue
+                previous = self.available_owner(db, row)
+                if previous and previous["id"] != worker:
                     continue
                 if row["compute"] == "heavy" and self.candidate(db, row) != worker:
                     continue

@@ -27,10 +27,18 @@ class HTTPTests(unittest.TestCase):
             with urllib.request.urlopen(req) as r:return r.status,r.read(),dict(r.headers)
         except urllib.error.HTTPError as e:return e.code,e.read(),dict(e.headers)
 
-    def test_authentication_and_no_unauthenticated_state(self):
-        self.assertEqual(401,self.request("/api/state")[0])
+    def test_dashboard_has_no_login_and_workers_keep_ownership(self):
+        self.assertEqual(200,self.request("/api/state")[0])
         self.assertEqual(200,self.request("/api/state","oliver-mini")[0])
         self.assertEqual(403,self.request("/api/worker/claim","admin",{})[0])
+        self.assertEqual(403,self.request("/api/worker/claim",body={})[0])
+        code,body,_=self.request('/api/tasks',body={'request_key':'dashboard-create','title':'Browser submission'})
+        self.assertEqual(200,code)
+        self.assertEqual('dashboard',json.loads(body)['submitted_by'])
+
+    def test_unknown_host_and_cross_site_fetch_rejected(self):
+        self.assertEqual(403,self.request('/api/state',extra={'Host':'evil.invalid'})[0])
+        self.assertEqual(403,self.request('/api/tasks',body={'title':'X'},extra={'Sec-Fetch-Site':'cross-site'})[0])
 
     def test_cross_origin_mutation_rejected(self):
         self.assertEqual(403,self.request("/api/tasks","oliver-mac",{"title":"X"},extra={"Origin":"https://evil.invalid"})[0])
