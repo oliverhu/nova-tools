@@ -39,7 +39,7 @@ unavailability. A quiet reasoning interval does not expire ownership. Stop on
 an actual ownership rejection. Finish using `finish ID --receipt /path.json`
 with summary and `execution_stopped: true` only after operations settle; use
 `--outcome blocked` for a technical failure or `failed` for an unknown outcome requiring inspection. Use `--outcome pending_external_approval` when work waits on Apple, an external reviewer or an explicit human approval. Pending External Approval never retries automatically; do not resubmit approval requests. Resume only after actual approval is verified and the task is explicitly returned to the queue. A failed/blocked task does
-not consume the worker forever. Settled blocked tasks become eligible automatically after 15 minutes, up to the cumulative 10-attempt limit. The service prefers a different available eligible host for a retry, while preserving hard worker/resource requirements. Inspect prior receipts and external state before side effects; apply a concrete correction before repeating a failed operation. Report cumulative `fix_attempts_used` in each receipt. Reassignment never resets attempts. Its owner can also use `retry ID --receipt /path.json`
+not consume the worker forever. Settled blocked tasks become eligible automatically after 15 minutes, up to 10 attempts per host assignment. The service prefers a different available eligible host for a retry, while preserving hard worker/resource requirements. Inspect prior receipts and external state before side effects; apply a concrete correction before repeating a failed operation. Report `fix_attempts_used` for the current host assignment in each receipt. A claim on a different host resets this count to zero and increments `reassignment_count`; at most 6 host changes are allowed per task. Same-host retries never reset the count. Keep lifetime evidence and `total_fix_attempts`. Its owner can also use `retry ID --receipt /path.json`
 after a concrete correction and proof of `execution_stopped`,
 `external_state_checked`, and descriptive `evidence`. Never replay an unknown
 publication or input outcome; inspect external state first. Old claims are fenced.
@@ -58,14 +58,21 @@ Preserve branch/commit/artifact evidence and prior attempt history for the next 
 
 ## Fix-attempt limit
 
-The user set the limit to **10 fix attempts per issue**, including current
-feature and UI-tool repair tasks. This supersedes older lower limits in task
-notes or worker prompts. Count attempts already used; do not reset the total on
-retry, reassignment or a new test-run identity. For example, three used attempts
-leave seven. Record the cumulative count in progress and receipts. Apply a
-concrete correction before retrying, preserve the acceptance checks, and verify
-previous execution has settled. If ten attempts fail, record the remaining
-blocker and evidence. This changes the fix-attempt count, not acceptance criteria.
+The user set **10 fix attempts per host assignment**, with at most **6 host
+reassignments per task**. This supersedes older instructions prohibiting resets
+on transfer. An initial assignment does not consume a reassignment. Count a host
+change only when the new host actually claims the task, not when it is queued.
+The service resets `fix_attempts_used` to zero on a host change and preserves
+`total_fix_attempts` and all receipts. Returning to a previously used host counts
+as another reassignment and grants a fresh 10 attempts. Same-host retries keep
+the current count. After six host changes, the final host may finish its remaining
+attempts, but no seventh transfer is allowed. Hard requirements still apply.
+
+Read current task counters on pickup (and after policy changes). Report
+`fix_attempts_used` for this assignment; do not copy lifetime counts into this
+field. Keep historical evidence, apply a concrete correction before retrying,
+preserve acceptance checks and verify prior execution has settled. Pending
+External Approval never retries automatically, regardless of remaining budget.
 
 ## UI-test tooling blockers
 

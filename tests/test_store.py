@@ -105,7 +105,9 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(self.store.detail(task['id'])['ready'])
         self.assertIsNone(self.store.claim('oliver-mac')['task'])
         new=self.store.claim('oliver-mini')
-        self.assertEqual(3,new['task']['fix_attempts_used'])
+        self.assertEqual(0,new['task']['fix_attempts_used'])
+        self.assertEqual(3,new['task']['total_fix_attempts'])
+        self.assertEqual(1,new['task']['reassignment_count'])
         self.assertEqual('keep-source',new['task']['result']['branch'])
         self.assertEqual(2,new['task']['generation'])
         with self.assertRaises(Conflict):self.finish(old)
@@ -122,17 +124,90 @@ class StoreTests(unittest.TestCase):
         self.now+=900;self.pulse()
         self.assertEqual('oliver-mac',self.store.claim('oliver-mac',other['id'])['task']['owner'])
 
-    def test_retry_preserves_limit_across_restarts_and_manual_retry(self):
-        task=self.add();old=self.store.claim('oliver-mac')
-        self.finish(old,'blocked',feature_attempts=10)
-        self.store=Store(self.store.path,clock=lambda:self.now)
+    def test_six_host_changes_reset_attempts_then_stop(self):
+        task=self.add();claim=self.store.claim('oliver-mac')
+        self.assertEqual(0,claim['task']['reassignment_count'])
+        for changes in range(7):
+            self.assertEqual(0,claim['task']['fix_attempts_used'])
+            self.assertEqual(changes,claim['task']['reassignment_count'])
+            self.assertEqual(changes*10,claim['task']['total_fix_attempts'])
+            self.finish(claim,'blocked',fix_attempts_used=10)
+            self.store=Store(self.store.path,clock=lambda:self.now)
+            self.now+=900;self.pulse()
+            current=claim['task']['owner']
+            other='oliver-mini' if current=='oliver-mac' else 'oliver-mac'
+            self.assertIsNone(self.store.claim(current)['task'])
+            if changes<6:
+                claim=self.store.claim(other)
+                self.assertIsNotNone(claim['task'])
+            else:
+                self.assertIsNone(self.store.claim(other)['task'])
+        shown=self.store.detail(task['id'])
+        self.assertEqual(70,shown['total_fix_attempts']);self.assertFalse(shown['ready'])
+        self.assertEqual('Retry limits reached',shown['next_worker_label'])
+        with self.assertRaises(Conflict):
+            self.store.reconcile('admin',task['id'],self.wait_body(claim,action='retry'))
+        # A deferred queue entry cannot bypass either budget.
+        with self.assertRaises(Conflict):self.store.defer('admin',task['id'],self.wait_body(claim,worker='oliver-mini'))
+        self.assertIsNone(self.store.claim('oliver-mini')['task'])
+
+    def test_final_host_can_use_remaining_attempts_but_not_transfer(self):
+        task=self.add();claim=self.store.claim('oliver-mac')
+        for _ in range(6):
+            self.finish(claim,'blocked',fix_attempts_used=1)
+            self.now+=900;self.pulse()
+            claim=self.store.claim('oliver-mini' if claim['task']['owner']=='oliver-mac' else 'oliver-mac')
+        self.finish(claim,'blocked',fix_attempts_used=2)
         self.now+=900;self.pulse()
         self.assertIsNone(self.store.claim('oliver-mini')['task'])
-        shown=self.store.detail(task['id'])
-        self.assertEqual(10,shown['fix_attempts_used']);self.assertFalse(shown['ready'])
-        self.assertEqual('Attempt limit reached',shown['next_worker_label'])
-        with self.assertRaises(Conflict):
-            self.store.reconcile('admin',task['id'],self.wait_body(old,action='retry'))
+        retry=self.store.claim('oliver-mac')
+        self.assertEqual(2,retry['task']['fix_attempts_used'])
+        self.assertEqual(6,retry['task']['reassignment_count'])
+        self.assertEqual(8,retry['task']['total_fix_attempts'])
+
+    def test_manual_retry_and_defer_count_only_actual_host_changes(self):
+        task=self.add();claim=self.store.claim('oliver-mac');self.finish(claim,'blocked',fix_attempts_used=10)
+        self.store.reconcile('admin',task['id'],self.wait_body(claim,action='retry'))
+        self.assertEqual(0,self.store.detail(task['id'])['reassignment_count'])
+        self.assertIsNone(self.store.claim('oliver-mac')['task'])
+        retry=self.store.claim('oliver-mini')
+        self.assertEqual(1,retry['task']['reassignment_count']);self.assertEqual(0,retry['task']['fix_attempts_used'])
+        self.store.defer('oliver-mini',task['id'],self.wait_body(retry,worker='oliver-mac'))
+        self.assertEqual(1,self.store.detail(task['id'])['reassignment_count'])
+        self.assertEqual(2,self.store.claim('oliver-mac')['task']['reassignment_count'])
+
+    def test_migration_counts_previous_transfers_and_preserves_active_claim(self):
+        import sqlite3
+        from coordinator.store import SCHEMA
+        task=self.add();old=self.store.claim('oliver-mac');self.finish(old,'blocked',feature_attempts=10)
+        self.now+=900;self.pulse();active=self.store.claim('oliver-mini')
+        legacy_path=Path(self.temp.name)/'legacy'
+        legacy=sqlite3.connect(legacy_path)
+        legacy.executescript(SCHEMA)
+        for definition in ('last_owner TEXT', "task_type TEXT NOT NULL DEFAULT 'work'", 'fix_attempts_used INTEGER NOT NULL DEFAULT 0', 'retry_after REAL'):
+            legacy.execute('ALTER TABLE tasks ADD COLUMN '+definition)
+        with self.store.connection() as db:
+            for table in ('tasks','events','receipts','workers'):
+                columns=[r[1] for r in legacy.execute('PRAGMA table_info('+table+')')]
+                for row in db.execute('SELECT '+','.join(columns)+' FROM '+table):
+                    legacy.execute('INSERT INTO '+table+' ('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+')',tuple(row))
+        # Old policy retained the previous host's ten attempts after transfer.
+        legacy.execute('UPDATE tasks SET fix_attempts_used=10');legacy.commit();legacy.close()
+        self.store=Store(legacy_path,clock=lambda:self.now)
+        migrated=self.store.detail(task['id'])
+        self.assertEqual('running',migrated['status']);self.assertEqual(2,migrated['generation'])
+        self.assertEqual(1,migrated['reassignment_count']);self.assertEqual(0,migrated['fix_attempts_used'])
+        self.assertEqual(10,migrated['total_fix_attempts']);self.assertEqual(1,len(migrated['receipts']))
+        self.store.heartbeat('oliver-mini',task['id'],self.body(active))
+        self.assertEqual(11,self.finish(active,'blocked',feature_attempts=11)['total_fix_attempts'])
+        self.store=Store(legacy_path,clock=lambda:self.now)
+        self.assertEqual(1,self.store.detail(task['id'])['fix_attempts_used'])
+
+    def test_legacy_cumulative_receipt_translates_after_host_change(self):
+        self.add();claim=self.store.claim('oliver-mac');self.finish(claim,'blocked',feature_attempts=10)
+        self.now+=900;self.pulse();retry=self.store.claim('oliver-mini')
+        result=self.finish(retry,'blocked',feature_attempts=11)
+        self.assertEqual(1,result['fix_attempts_used']);self.assertEqual(11,result['total_fix_attempts'])
 
     def test_pending_external_approval_never_retries_until_verified(self):
         task=self.add();old=self.store.claim('oliver-mac')
@@ -175,11 +250,15 @@ class StoreTests(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             claims=list(pool.map(lambda _:self.store.claim('oliver-mini',task['id']),range(16)))
         self.assertEqual(1,sum(c['task'] is not None for c in claims))
+        self.assertEqual(1,self.store.detail(task['id'])['reassignment_count'])
 
     def test_blocked_retry_defaults_consume_attempts_and_counts_cannot_decrease(self):
         task=self.add();old=self.store.claim('oliver-mac');self.finish(old,'blocked')
         self.assertEqual(1,self.store.detail(task['id'])['fix_attempts_used'])
-        self.now+=900;self.pulse();new=self.store.claim('oliver-mini')
+        self.now+=900;self.pulse();self.store.pulse('oliver-mini',{'capacity':{}})
+        # Keep the same host through a hard requirement to verify no reset.
+        with self.store.transaction() as db:db.execute('UPDATE tasks SET requirements=? WHERE id=?',(json.dumps({'worker':'oliver-mac'}),task['id']))
+        new=self.store.claim('oliver-mac')
         with self.assertRaises(Invalid):self.finish(new,'blocked',fix_attempts_used=0)
         self.finish(new,'blocked')
         self.assertEqual(2,self.store.detail(task['id'])['fix_attempts_used'])

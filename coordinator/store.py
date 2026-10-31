@@ -34,6 +34,7 @@ def bounded(value, name, maximum=12000):
 
 RETRY_DELAY = 15 * 60
 FIX_ATTEMPT_LIMIT = 10
+REASSIGNMENT_LIMIT = 6
 
 
 def reported_attempts(value):
@@ -112,6 +113,28 @@ class Store:
             if 'retry_after' not in columns:
                 # Legacy blocks need classification before enabling automatic retry.
                 db.execute('ALTER TABLE tasks ADD COLUMN retry_after REAL')
+            if 'reassignment_count' not in columns:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute('ALTER TABLE tasks ADD COLUMN reassignment_count INTEGER NOT NULL DEFAULT 0')
+                db.execute('ALTER TABLE tasks ADD COLUMN attempts_host TEXT')
+                db.execute('ALTER TABLE tasks ADD COLUMN attempt_base INTEGER NOT NULL DEFAULT 0')
+                db.execute('ALTER TABLE tasks ADD COLUMN total_fix_attempts INTEGER NOT NULL DEFAULT 0')
+                for task in db.execute('SELECT * FROM tasks').fetchall():
+                    host, changes, switch_generation = None, 0, 0
+                    for event in db.execute("SELECT actor,detail FROM events WHERE task_id=? AND kind='claimed' ORDER BY id", (task['id'],)):
+                        if host and host != event['actor']:
+                            changes += 1
+                            match = re.search(r'generation (\d+)', event['detail'])
+                            switch_generation = int(match[1]) if match else task['generation']
+                        host = event['actor']
+                    base = max([0, *(reported_attempts(json.loads(r[0])) for r in db.execute(
+                        'SELECT receipt FROM receipts WHERE task_id=? AND generation<?', (task['id'], switch_generation)))])
+                    total = max(base, task['fix_attempts_used'])
+                    db.execute('UPDATE tasks SET reassignment_count=?,attempts_host=?,attempt_base=?,total_fix_attempts=?,fix_attempts_used=? WHERE id=?',
+                               (changes, host or task['owner'] or task['last_owner'], base, total, total-base, task['id']))
+                    if task['status']=='blocked' and task['fix_attempts_used']>=FIX_ATTEMPT_LIMIT and json.loads(task['result']).get('execution_stopped') is True:
+                        db.execute('UPDATE tasks SET retry_after=COALESCE(retry_after,?) WHERE id=?', (self.clock()+RETRY_DELAY,task['id']))
+                db.commit()
             repo_columns = {r[1] for r in db.execute("PRAGMA table_info(repositories)")}
             if "published_task_created" not in repo_columns:
                 db.execute("ALTER TABLE repositories ADD COLUMN published_task_created REAL NOT NULL DEFAULT 0")
@@ -162,20 +185,17 @@ class Store:
         task["execution_policy"] = ("Publish only the pinned release target; no global locks. Verify external outcome before reporting success."
             if task["current_step"] and task["current_step"]["kind"] == "publish" else
             "Implement, test and merge. DO NOT PUBLISH Nova from ordinary work. Only engine rebuilds are heavy. No global locks; ownership does not expire on missed heartbeat. If UI test tooling blocks a feature, enqueue or reuse a concrete UI-tool repair task and wait on its task ID; preserve feature acceptance and prior attempt history. Product defects and missing account access are not UI-tool failures. For scheduling waits, return settled work through POST /api/tasks/ID/defer with claim identity, execution_stopped, external_state_checked, evidence, and worker and/or dependencies; keep it queued rather than blocked. After settled work, immediately pull again.")
-        if task['task_type'] != 'publish':
-            task['fix_attempt_limit'] = 10
-            task['execution_policy'] += (' User-set fix limit: 10 attempts per issue, including attempts already used. '
-                'This supersedes older lower attempt limits for current and future fixes. '
-                'Keep the cumulative count in progress/receipts; do not reset it on retry or worker transfer. '
-                'Each retry should apply a concrete correction; preserve acceptance checks and verify prior execution settled. '
-                'At 10 unsuccessful attempts, record the remaining blocker.')
         task["heartbeat_stale"] = task["status"] == "running" and (task["lease_until"] or 0) <= self.clock()
         task['fix_attempt_limit'] = FIX_ATTEMPT_LIMIT
+        task['reassignment_limit'] = REASSIGNMENT_LIMIT
         task['execution_policy'] += (
             ' For external approval waits, finish with outcome pending_external_approval; never retry or resubmit approval requests automatically. '
-            'Settled blocked tasks retry after 15 minutes, up to 10 cumulative fix attempts, and may move to another eligible host. '
+            'Settled blocked tasks retry after 15 minutes, up to 10 fix attempts per host assignment. '
+            'An actual claim by a different host resets fix_attempts_used to zero and consumes one of at most 6 lifetime host reassignments. '
+            'Same-host retries do not reset the count; the initial assignment is not a reassignment. '
             'Read all prior receipts and inspect external state before any retry side effects; apply a concrete correction. '
-            'Record cumulative fix_attempts_used in receipts; switching hosts does not reset it.')
+            'Record fix_attempts_used for the current host assignment in receipts; preserve lifetime evidence in total_fix_attempts. '
+            'This user policy supersedes older instructions that forbid resetting on host transfer.')
         if (task['task_type']=='publish' and task['status'] not in ('completed','cancelled')
                 and task['result'].get('release_target',{}).get('repository')=='oliverhu/nova-browser'):
             task['delivery_targets'] = ['macos_public_release','ios_app_store_connect_upload_only']
@@ -278,7 +298,7 @@ class Store:
     def candidate(self, db, task):
         workers = db.execute("""SELECT * FROM workers WHERE paused=0 AND seen>? AND id NOT IN
             (SELECT owner FROM tasks WHERE status IN ('running','held') AND owner IS NOT NULL)""", (self.clock()-90,)).fetchall()
-        workers = [w for w in workers if self.fits(task, w)]
+        workers = [w for w in workers if self.fits(task, w) and self.assignment_allowed(task, w['id'])]
         if not workers:
             return None
         if task['status'] == 'blocked':
@@ -294,7 +314,7 @@ class Store:
         # Mac when the mini is offline/paused or cannot meet hard requirements.
         if task["compute"] == "heavy":
             mini = db.execute("SELECT * FROM workers WHERE id='oliver-mini' AND paused=0 AND seen>?", (self.clock()-90,)).fetchone()
-            if mini and self.fits(task, mini):
+            if mini and self.fits(task, mini) and self.assignment_allowed(task, mini["id"]):
                 return "oliver-mini" if any(w["id"] == "oliver-mini" for w in workers) else None
             def power(w):
                 c = json.loads(w["capacity"])
@@ -308,7 +328,12 @@ class Store:
     def available_owner(self, db, task):
         previous = db.execute("SELECT * FROM workers WHERE id=? AND paused=0 AND seen>?",
                               (task["owner"], self.clock()-90)).fetchone()
-        return previous if previous and self.fits(task, previous) else None
+        return previous if previous and self.fits(task, previous) and self.assignment_allowed(task,previous['id']) else None
+
+    def assignment_allowed(self, task, worker):
+        if task['attempts_host'] and task['attempts_host'] != worker:
+            return task['reassignment_count'] < REASSIGNMENT_LIMIT
+        return task['fix_attempts_used'] < FIX_ATTEMPT_LIMIT
 
     def resources(self, row, worker):
         return []
@@ -333,9 +358,9 @@ class Store:
                 reason = 'Waiting for: ' + ', '.join(d['title'] for d in pending)
             if not reason and not candidate:
                 reason = 'Waiting for an available worker that meets requirements'
-            exhausted = row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT
+            exhausted = row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT
             return {**result, 'next_worker': None if exhausted else target,
-                    'next_worker_label': 'Attempt limit reached' if exhausted else target or 'Either available Mac',
+                    'next_worker_label': 'Retry limits reached' if exhausted else target or 'Either available Mac',
                     'waiting_dependencies': pending, 'ready': not reason,
                     'waiting_reason': reason or 'Ready for automatic retry'}
         if row['status'] != 'queued':
@@ -364,8 +389,8 @@ class Store:
         return result
 
     def retry_wait(self, row):
-        if row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT:
-            return '10-attempt limit reached; reassignment does not reset attempts'
+        if row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
+            return '10 attempts on this assignment and 6 lifetime host reassignments exhausted'
         if json.loads(row['result']).get('execution_stopped') is not True:
             return 'Prior execution must be confirmed stopped before retry'
         if row['retry_after'] is None:
@@ -393,6 +418,8 @@ class Store:
             if 'worker' in body:
                 if body['worker'] not in ('oliver-mac', 'oliver-mini'):
                     raise Invalid('Unknown destination worker')
+                if row['attempts_host'] and body['worker'] != row['attempts_host'] and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
+                    raise Conflict('6 host reassignments exhausted')
                 req['worker'] = body['worker']
             deps = body.get('dependencies', json.loads(row['dependencies']))
             if not isinstance(deps, list) or len(deps)>50 or not all(isinstance(d, str) for d in deps):
@@ -435,7 +462,7 @@ class Store:
                 if any(db.execute("SELECT status FROM tasks WHERE id=?", (d,)).fetchone()[0] != "completed" for d in deps):
                     continue
                 own = db.execute("SELECT * FROM workers WHERE id=? AND paused=0 AND seen>?", (worker,self.clock()-90)).fetchone()
-                if not own or not self.fits(row,own) or db.execute("SELECT id FROM tasks WHERE owner=? AND status IN ('running','held')", (worker,)).fetchone():
+                if not own or not self.fits(row,own) or not self.assignment_allowed(row,worker) or db.execute("SELECT id FROM tasks WHERE owner=? AND status IN ('running','held')", (worker,)).fetchone():
                     continue
                 previous = self.available_owner(db, row) if row['status'] == 'queued' else None
                 if previous and previous["id"] != worker:
@@ -451,6 +478,14 @@ class Store:
                     db.execute("INSERT INTO locks VALUES(?,?,?,?,?)", (resource,row["id"],generation,worker,now))
                 if row['status'] == 'blocked':
                     self.event(db, worker, 'automatic-retry', row['id'], encoded({'previous_worker': row['last_owner'], 'fix_attempts_used': row['fix_attempts_used']}))
+                changed_host = bool(row['attempts_host'] and row['attempts_host'] != worker)
+                if changed_host:
+                    self.event(db, worker, 'host-reassigned', row['id'], encoded({'from':row['attempts_host'],'to':worker,
+                        'reassignment_count':row['reassignment_count']+1,'previous_assignment_attempts':row['fix_attempts_used'],
+                        'total_fix_attempts':row['total_fix_attempts']}))
+                db.execute('UPDATE tasks SET reassignment_count=reassignment_count+?,attempts_host=?,fix_attempts_used=?,attempt_base=? WHERE id=?',
+                    (int(changed_host),worker,0 if changed_host else row['fix_attempts_used'],
+                     row['total_fix_attempts'] if changed_host else row['attempt_base'],row['id']))
                 db.execute("""UPDATE tasks SET status='running',owner=?,claim_hash=?,generation=?,lease_until=?,updated=?,retry_after=NULL WHERE id=?""",
                            (worker,hashlib.sha256(token.encode()).hexdigest(),generation,now+self.lease_seconds,now,row["id"]))
                 db.execute("UPDATE workers SET last_claim=? WHERE id=?", (now,worker))
@@ -504,8 +539,10 @@ class Store:
             if row["status"] != "running" or body.get("step") != row["step"]:
                 raise Conflict("Task/step is not running; reconcile held outcomes separately")
             if 'fix_attempts_used' in receipt and (type(receipt['fix_attempts_used']) is not int or receipt['fix_attempts_used'] < row['fix_attempts_used']):
-                raise Invalid('fix_attempts_used must preserve the cumulative attempt count')
-            attempts = max(row['fix_attempts_used'], reported_attempts(receipt))
+                raise Invalid('fix_attempts_used must preserve the count within this host assignment')
+            # Canonical counts are per assignment; older receipt aliases are lifetime totals.
+            reported = receipt.get('fix_attempts_used', max(0,reported_attempts(receipt)-row['attempt_base']))
+            attempts = max(row['fix_attempts_used'], reported)
             if outcome == 'blocked':
                 # A failed execution consumes at least one attempt, even on an older client.
                 attempts = max(attempts, min(FIX_ATTEMPT_LIMIT, row['fix_attempts_used'] + 1))
@@ -537,9 +574,10 @@ class Store:
             if target:
                 receipt = {**receipt, "release_target": target}
             db.execute("INSERT INTO receipts VALUES(?,?,?,?,?)", (ident,row["generation"],row["step"],encoded({"outcome":outcome,"receipt":receipt}),self.clock()))
-            db.execute("UPDATE tasks SET status=?,step=?,updated=?,lease_until=NULL,progress=?,result=?,last_owner=owner,fix_attempts_used=?,retry_after=? WHERE id=?",
+            db.execute("UPDATE tasks SET status=?,step=?,updated=?,lease_until=NULL,progress=?,result=?,last_owner=owner,fix_attempts_used=?,total_fix_attempts=?,retry_after=? WHERE id=?",
                        (status,next_step,self.clock(),receipt["summary"],encoded(receipt),attempts,
-                        self.clock()+RETRY_DELAY if outcome=='blocked' and attempts<FIX_ATTEMPT_LIMIT else None,ident))
+                        row['total_fix_attempts']+attempts-row['fix_attempts_used'],
+                        self.clock()+RETRY_DELAY if outcome=='blocked' else None,ident))
             self.event(db,worker,status,ident,receipt["summary"])
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone())
 
@@ -568,8 +606,8 @@ class Store:
                     raise Conflict('Approval classification/resume requires administrator and current generation')
                 if action in ('retry', 'complete') and body.get('approval_received') is not True:
                     raise Invalid('External approval must be verified before resuming')
-            if action == 'retry' and row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT:
-                raise Conflict('10-attempt limit reached; preserve the cumulative count')
+            if action == 'retry' and row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
+                raise Conflict('10 attempts and 6 host reassignments exhausted')
             if actor != "admin":
                 self.owned(db, actor, ident, body.get("claim_token"), body.get("generation"))
                 if action != "retry":

@@ -173,9 +173,9 @@ retaining other dependencies and all acceptance evidence. Repair completion
 allows the feature to resume its missing checks; it does not count as feature
 acceptance. Product failures and missing account access are classified separately.
 
-The user-set fix-attempt limit is 10 per issue for current and future feature
-and UI-tool repairs. Workers retain cumulative counts across retries/transfers;
-three used attempts leave seven. Older receipt limits remain historical evidence.
+The user-set fix-attempt limit is 10 per host assignment for feature and UI-tool
+repairs. A new host resets that count; at most 6 host reassignments are allowed
+per task. Lifetime attempts and historical receipts remain available.
 
 Nova release tasks now include the macOS public release and an **iOS upload to
 App Store Connect only**, using the pinned source. No TestFlight distribution,
@@ -207,8 +207,14 @@ dependencies still apply. A running claim is never reassigned. The UI distinguis
 the actual next worker from the last worker and shows retry readiness. Workers
 read previous evidence and inspect external state before executing a correction.
 
-Receipts report cumulative `fix_attempts_used`. Prior counts survive reassignment
-and deployment; the service stops automatic retries at 10 attempts. Older clients
-without a count consume at least one attempt per blocked execution. Legacy blocked
-records require classification once rather than being replayed blindly. Failed
+Receipts report `fix_attempts_used` within the current host assignment. An actual
+claim by a different host resets this count and increments `reassignment_count`,
+up to 6 changes per task. The initial assignment is not a reassignment. Returning
+to a previous host consumes another change. Same-host retries do not reset the
+count. The final host may use its remaining attempts after the sixth transfer.
+`total_fix_attempts` retains lifetime history. The service enforces these budgets
+atomically for automatic, manually retried, and deferred claims. Deployment
+reconstructs previous host changes from claim events and preserves receipts.
+Older cumulative receipt aliases are translated using the assignment baseline;
+new workers should use the per-assignment `fix_attempts_used` field. Failed
 unknown outcomes and human holds retain explicit reconciliation.
