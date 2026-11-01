@@ -116,6 +116,8 @@ class Store:
             if 'retry_after' not in columns:
                 # Legacy blocks need classification before enabling automatic retry.
                 db.execute('ALTER TABLE tasks ADD COLUMN retry_after REAL')
+            if 'attempt_exception' not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN attempt_exception TEXT NOT NULL DEFAULT '{}'")
             if 'reassignment_count' not in columns:
                 db.execute('BEGIN IMMEDIATE')
                 db.execute('ALTER TABLE tasks ADD COLUMN reassignment_count INTEGER NOT NULL DEFAULT 0')
@@ -182,7 +184,7 @@ class Store:
         task = dict(row)
         task.pop("claim_hash", None)
         task.pop("request_hash", None)
-        for field in ("requirements", "dependencies", "steps", "result"):
+        for field in ("requirements", "dependencies", "steps", "result", "attempt_exception"):
             task[field] = json.loads(task[field])
         task["current_step"] = task["steps"][task["step"]] if task["step"] < len(task["steps"]) else None
         task["execution_policy"] = ("Publish only the pinned release target; no global locks. Verify external outcome before reporting success."
@@ -190,6 +192,10 @@ class Store:
             "Implement, test and merge. DO NOT PUBLISH Nova from ordinary work. Only engine rebuilds are heavy. No global locks; ownership does not expire on missed heartbeat. If UI test tooling blocks a feature, enqueue or reuse a concrete UI-tool repair task and wait on its task ID; preserve feature acceptance and prior attempt history. Product defects and missing account access are not UI-tool failures. For scheduling waits, return settled work through POST /api/tasks/ID/defer with claim identity, execution_stopped, external_state_checked, evidence, and worker and/or dependencies; keep it queued rather than blocked. After settled work, immediately pull again.")
         task["heartbeat_stale"] = task["status"] == "running" and (task["lease_until"] or 0) <= self.clock()
         task['fix_attempt_limit'] = FIX_ATTEMPT_LIMIT
+        exception = task['attempt_exception']
+        if exception and (self.exception_available(row, exception['request']['worker']) or
+                (task['status'] == 'running' and exception.get('consumed_generation') == task['generation'])):
+            task['fix_attempt_limit'] = FIX_ATTEMPT_LIMIT + 1
         task['reassignment_limit'] = REASSIGNMENT_LIMIT
         task['execution_policy'] += (
             ' For external approval waits, finish with outcome pending_external_approval; never retry or resubmit approval requests automatically. '
@@ -339,7 +345,19 @@ class Store:
     def assignment_allowed(self, task, worker):
         if task['attempts_host'] and task['attempts_host'] != worker:
             return task['reassignment_count'] < REASSIGNMENT_LIMIT
-        return task['fix_attempts_used'] < FIX_ATTEMPT_LIMIT
+        return task['fix_attempts_used'] < FIX_ATTEMPT_LIMIT or self.exception_available(task, worker)
+
+    @staticmethod
+    def exception_available(task, worker):
+        exception = json.loads(task['attempt_exception'])
+        if not exception or exception.get('consumed_generation') is not None or exception.get('invalidated_at') is not None:
+            return False
+        request = exception['request']
+        return (task['status'] == 'queued' and request['worker'] == worker == task['attempts_host']
+                and request['generation'] == task['generation']
+                and task['fix_attempts_used'] == FIX_ATTEMPT_LIMIT
+                and exception['attempt_base'] == task['attempt_base']
+                and exception['reassignment_count'] == task['reassignment_count'])
 
     def resources(self, row, worker):
         return []
@@ -509,6 +527,16 @@ class Store:
                 db.execute('UPDATE tasks SET reassignment_count=reassignment_count+?,attempts_host=?,fix_attempts_used=?,attempt_base=? WHERE id=?',
                     (int(changed_host),worker,0 if changed_host else row['fix_attempts_used'],
                      row['total_fix_attempts'] if changed_host else row['attempt_base'],row['id']))
+                if self.exception_available(row, worker):
+                    exception = json.loads(row['attempt_exception'])
+                    exception['consumed_generation'] = generation
+                    # Consume the single extra attempt atomically with its claim,
+                    # including when that run later fails before native input.
+                    db.execute('UPDATE tasks SET attempt_exception=?,fix_attempts_used=fix_attempts_used+1,total_fix_attempts=total_fix_attempts+1 WHERE id=?',
+                               (encoded(exception), row['id']))
+                    self.event(db, worker, 'attempt-exception-consumed', row['id'], encoded({
+                        'approval_id': exception['request']['approval_id'], 'generation': generation,
+                        'attempt_number': FIX_ATTEMPT_LIMIT + 1}))
                 db.execute("""UPDATE tasks SET status='running',owner=?,claim_hash=?,generation=?,lease_until=?,updated=?,retry_after=NULL WHERE id=?""",
                            (worker,hashlib.sha256(token.encode()).hexdigest(),generation,now+self.lease_seconds,now,row["id"]))
                 db.execute("UPDATE workers SET last_claim=? WHERE id=?", (now,worker))
@@ -663,6 +691,7 @@ class Store:
                 rows.append((row,entry))
             db.execute('INSERT INTO approvals VALUES(?,?,?,?)',(ident,actor,serialized,self.clock()))
             for row,entry in rows:
+                self.invalidate_attempt_exception(db, row)
                 progress = 'Approval recorded: '+payload['response']+'. Awaiting execution/qualification. '+entry['scope_evidence']
                 db.execute("UPDATE tasks SET status='queued',last_owner=COALESCE(owner,last_owner),owner=NULL,claim_hash=NULL,lease_until=NULL,retry_after=NULL,updated=?,progress=? WHERE id=?",
                            (self.clock(),progress,row['id']))
@@ -671,6 +700,74 @@ class Store:
                     'scope':payload['scope'],'scope_evidence':entry['scope_evidence']}))
             record = db.execute('SELECT * FROM approvals WHERE id=?',(ident,)).fetchone()
             return {**self._approval_readback(db,record),'replayed':False}
+
+    def apply_attempt_exception(self, actor, body):
+        """Bind one explicitly verified extra attempt to an existing approval.
+
+        An approval's prose is never interpreted as a limit override. The caller
+        must verify the actual human exception and explicitly bind its source.
+        This supplemental record does not rewrite the immutable approval payload.
+        """
+        if actor not in ('admin', 'oliver-mac', 'oliver-mini'):
+            raise Conflict('Authenticated approval actor required')
+        fields = {'approval_id', 'source', 'task', 'generation', 'worker', 'expected_used',
+                  'attempt_number', 'scope_evidence', 'exception_verified', 'execution_stopped', 'external_state_checked'}
+        if not isinstance(body, dict) or set(body) != fields:
+            raise Invalid('Exact bounded attempt-exception fields required')
+        if any(body.get(k) is not True for k in ('exception_verified', 'execution_stopped', 'external_state_checked')):
+            raise Invalid('Verify the explicit human exception and settled execution first')
+        if (body['worker'] not in ('oliver-mac', 'oliver-mini')
+                or type(body['generation']) is not int or body['generation'] < 1
+                or type(body['expected_used']) is not int or body['expected_used'] != FIX_ATTEMPT_LIMIT
+                or type(body['attempt_number']) is not int or body['attempt_number'] != FIX_ATTEMPT_LIMIT + 1):
+            raise Invalid('Only one extra attempt after ten on the named current host is supported')
+        if not re.fullmatch('[0-9a-f]{16}', str(body['task'])) or not re.fullmatch('[0-9a-f]{64}', str(body['approval_id'])):
+            raise Invalid('Exact existing task and approval identities required')
+        bounded(body['scope_evidence'], 'scope_evidence', 4000)
+        with self.transaction() as db:
+            approval = db.execute('SELECT * FROM approvals WHERE id=?', (body['approval_id'],)).fetchone()
+            if not approval or (actor != 'admin' and approval['actor'] != actor):
+                raise Conflict('Use this actor\'s existing verified approval')
+            payload = json.loads(approval['payload'])
+            if body['source'] != payload['source'] or not any(
+                    t['id'] == body['task'] and t['generation'] == body['generation'] for t in payload['tasks']):
+                raise Conflict('Exception source/task/generation must match the immutable approval')
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (body['task'],)).fetchone()
+            if not row:
+                raise Conflict('Unknown task')
+            prior = json.loads(row['attempt_exception'])
+            if prior:
+                if prior['request'] != body or prior['actor'] != actor:
+                    raise Conflict('This task already has an immutable single-attempt exception')
+                return {'recorded': True, 'replayed': True, 'exception': prior,
+                        'task': {**self.public_task(row), **self.scheduling(db, row)}}
+            receipt = json.loads(row['result'])
+            if (row['status'] != 'queued' or row['generation'] != body['generation']
+                    or row['attempts_host'] != body['worker'] or row['fix_attempts_used'] != body['expected_used']
+                    or receipt.get('execution_stopped') is not True or receipt.get('human_stop') is True
+                    or (actor != 'admin' and (body['worker'] != actor or row['last_owner'] != actor))):
+                raise Conflict('Task must remain settled, approved, queued at ten on its original named host')
+            state = self.approval_state(db, row) or {}
+            if (state.get('state') != 'approved' or
+                    state.get('evidence', {}).get('approval_id') != body['approval_id']):
+                raise Conflict('Current task approval is not approved')
+            exception = {'request': body, 'actor': actor, 'at': self.clock(),
+                         'attempt_base': row['attempt_base'], 'reassignment_count': row['reassignment_count'],
+                         'consumed_generation': None}
+            db.execute('UPDATE tasks SET attempt_exception=?,updated=? WHERE id=?',
+                       (encoded(exception), self.clock(), row['id']))
+            self.event(db, actor, 'attempt-exception-approved', row['id'], encoded(exception))
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (row['id'],)).fetchone()
+            return {'recorded': True, 'replayed': False, 'exception': exception,
+                    'task': {**self.public_task(row), **self.scheduling(db, row)}}
+
+    def invalidate_attempt_exception(self, db, row):
+        exception = json.loads(row['attempt_exception'])
+        if exception and exception.get('consumed_generation') is None and exception.get('invalidated_at') is None:
+            exception['invalidated_at'] = self.clock()
+            db.execute('UPDATE tasks SET attempt_exception=? WHERE id=?', (encoded(exception), row['id']))
+            self.event(db, 'service', 'attempt-exception-invalidated', row['id'], encoded({
+                'approval_id': exception['request']['approval_id'], 'generation': row['generation']}))
 
     def approval_state(self, db, row):
         if row['status'] == 'pending_external_approval':
@@ -721,6 +818,7 @@ class Store:
             status = "cancelled" if action=="cancel" else "completed" if step==len(json.loads(row["steps"])) else "queued"
             if action == 'pending_external_approval':
                 status = action
+            self.invalidate_attempt_exception(db, row)
             db.execute("DELETE FROM locks WHERE task_id=?", (ident,))
             db.execute("UPDATE tasks SET status=?,step=?,last_owner=COALESCE(owner,last_owner),owner=NULL,claim_hash=NULL,lease_until=NULL,retry_after=NULL,updated=?,progress=? WHERE id=?",
                        (status,step,self.clock(),evidence,ident))

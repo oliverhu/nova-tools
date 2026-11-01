@@ -255,6 +255,8 @@ def main():
     retry=sub.add_parser("retry");retry.add_argument("task");retry.add_argument("--receipt",type=Path,required=True)
     approve=sub.add_parser('approve',help='Apply one verified human decision to its explicitly covered pending tasks')
     approve.add_argument('--receipt',type=Path,required=True)
+    exception=sub.add_parser('attempt-exception',help='Bind one explicitly verified extra attempt to an applied human approval')
+    exception.add_argument('--receipt',type=Path,required=True)
     sub.add_parser('approval-recover',help='Reconcile interrupted, already verified local approval receipts')
     approval_status=sub.add_parser('approval-status',help='Read an applied approval and current task eligibility')
     approval_status.add_argument('approval_id')
@@ -284,6 +286,13 @@ def main():
         receipt=json.loads(args.receipt.read_text())
         result=client.request(f"/api/tasks/{args.task}/retry", {**receipt, **client.claim_body(args.task)})
     elif args.command=='approve':result=client.apply_approval(json.loads(args.receipt.read_text()))
+    elif args.command=='attempt-exception':
+        receipt=json.loads(args.receipt.read_text())
+        result=client.request('/api/attempt-exceptions/apply',receipt)
+        observed=client.request('/api/tasks/'+receipt['task'])
+        if observed.get('attempt_exception',{}).get('request') != receipt:
+            raise RuntimeError('Attempt exception readback did not match; inspect before executing')
+        result['task']=observed
     elif args.command=='approval-recover':result={'recovered':client.recover_approvals()}
     elif args.command=='approval-status':result=client.request('/api/approvals/'+args.approval_id)
     elif args.command=="wait":
