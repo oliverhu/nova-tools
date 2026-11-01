@@ -8,6 +8,9 @@ Source for Nova engineering tools maintained outside
 - `tests/`: coordinator regression and dashboard checks.
 - `skill/SKILL.md`: the coordination workflow installed on both workers.
 - `artifact-transfer/`: the restricted, read-only SSH artifact helper and setup notes.
+- `scripts/setup-new-mac.py`: new-Mac onboarding, permission requests and private
+  provisioning transfer. See [the setup guide](docs/new-mac-setup.md) and
+  [example configuration](setup/new-mac.example.json). Authored; not yet runtime-tested.
 
 The coordinator's original 18 source commits are preserved through `cc526e0`.
 The artifact helper is copied from the deployed Mac helper without changing its

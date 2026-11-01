@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "browser_path": "~/Documents/ChatGPT/browser",
+  "storage": {
+    "volume": "/Volumes/NovaBuild",
+    "volume_uuid": "REPLACE_WITH_THIS_MACS_APFS_VOLUME_UUID",
+    "artifact_root": "/Volumes/NovaBuild/DeveloperStorage/ProjectBuilds/browser"
+  },
+  "provisioning": {
+    "ssh_host": "nova-signing-source",
+    "bundle_path": "/Users/oliverhu/.local/share/nova-provisioning-export/nova-profiles.tar.gz",
+    "sha256": "REPLACE_WITH_EXPORT_SHA256"
+  },
+  "coordinator": {
+    "worker": null,
+    "cluster_host": "pi@192.168.2.13",
+    "old_worker_stopped": false,
+    "trust_internal_ca": true
+  }
+}

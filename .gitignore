@@ -24,7 +24,11 @@ secrets/
 *.pem
 *.p12
 *.pfx
+*.developerprofile
+*.provisionprofile
 *.mobileprovision
+*.tar.gz
+setup/*.local.json
 *.sqlite*
 *.db
 *.db-*

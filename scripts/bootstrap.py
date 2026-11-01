@@ -19,6 +19,7 @@ def main():
     p.add_argument("--build-path")
     p.add_argument("--repository-path")
     p.add_argument('--trust-internal-ca',action='store_true')
+    p.add_argument('--no-start',action='store_true',help='Install without starting capacity/dashboard agents')
     a=p.parse_args()
     def remote(command):
         return subprocess.check_output(["ssh","-o","BatchMode=yes","-o","ConnectTimeout=10","-o","StrictHostKeyChecking=yes",a.cluster_host,command])
@@ -46,7 +47,7 @@ def main():
             raise RuntimeError("Existing client belongs to another worker")
         with os.fdopen(fd,"w") as f:json.dump({**previous,"worker":a.worker,"url":"https://192.168.2.13:31866","token":credentials[a.worker],"ca_file":str(root/"ca.crt"),'root_ca_file':str(root/'internal-root.crt')},f)
         import sys
-        subprocess.run([sys.executable,str(root/"scripts/install-client.py"),"--config",str(config),*(["--build-path",a.build_path] if a.build_path else []),*(["--repository-path",a.repository_path] if a.repository_path else []),*(['--trust-internal-ca'] if a.trust_internal_ca else [])],check=True)
+        subprocess.run([sys.executable,str(root/"scripts/install-client.py"),"--config",str(config),*(["--build-path",a.build_path] if a.build_path else []),*(["--repository-path",a.repository_path] if a.repository_path else []),*(['--trust-internal-ca'] if a.trust_internal_ca else []),*(['--no-start'] if a.no_start else [])],check=True)
 
 
 if __name__=="__main__":main()
