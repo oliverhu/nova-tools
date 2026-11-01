@@ -40,7 +40,7 @@ unavailability. A quiet reasoning interval does not expire ownership. Stop on
 an actual ownership rejection. Finish using `finish ID --receipt /path.json`
 with summary and `execution_stopped: true` only after operations settle; use
 `--outcome blocked` for a technical failure or `failed` for an unknown outcome requiring inspection. Use `--outcome pending_external_approval` when work waits on Apple, an external reviewer or an explicit human approval. Pending External Approval never retries automatically; do not resubmit approval requests. Resume only after actual approval is verified and the task is explicitly returned to the queue. A failed/blocked task does
-not consume the worker forever. Settled blocked tasks become eligible automatically after 15 minutes, up to 10 attempts per host assignment. The service prefers a different available eligible host for a retry, while preserving hard worker/resource requirements. Inspect prior receipts and external state before side effects; apply a concrete correction before repeating a failed operation. Report `fix_attempts_used` for the current host assignment in each receipt. A claim on a different host resets this count to zero and increments `reassignment_count`; at most 6 host changes are allowed per task. Same-host retries never reset the count. Keep lifetime evidence and `total_fix_attempts`. Its owner can also use `retry ID --receipt /path.json`
+not consume the worker forever. Settled blocked tasks become eligible automatically after 15 minutes, up to 20 attempts per host assignment. Automatic retries stay on the current host until 20 attempts are used; then another eligible host can claim the task. Explicit scheduling handoffs still preserve hard worker/resource requirements. Inspect prior receipts and external state before side effects; apply a concrete correction before repeating a failed operation. Report `fix_attempts_used` for the current host assignment in each receipt. A claim on a different host resets this count to zero and increments `reassignment_count`; at most 6 host changes are allowed per task. Same-host retries never reset the count. Keep lifetime evidence and `total_fix_attempts`. Its owner can also use `retry ID --receipt /path.json`
 after a concrete correction and proof of `execution_stopped`,
 `external_state_checked`, and descriptive `evidence`. Never replay an unknown
 publication or input outcome; inspect external state first. Old claims are fenced.
@@ -130,13 +130,13 @@ do not rewrite unrelated tasks or interrupt running claims.
 
 ## Fix-attempt limit
 
-The user set **10 fix attempts per host assignment**, with at most **6 host
+The user set **20 fix attempts per host assignment**, with at most **6 host
 reassignments per task**. This supersedes older instructions prohibiting resets
 on transfer. An initial assignment does not consume a reassignment. Count a host
 change only when the new host actually claims the task, not when it is queued.
 The service resets `fix_attempts_used` to zero on a host change and preserves
 `total_fix_attempts` and all receipts. Returning to a previously used host counts
-as another reassignment and grants a fresh 10 attempts. Same-host retries keep
+as another reassignment and grants a fresh 20 attempts. Same-host retries keep
 the current count. After six host changes, the final host may finish its remaining
 attempts, but no seventh transfer is allowed. Hard requirements still apply.
 
@@ -148,16 +148,16 @@ External Approval never retries automatically, regardless of remaining budget.
 
 ## A human-approved single extra attempt
 
-The default remains ten attempts. If the actual human response explicitly grants
+The default remains twenty attempts. If the actual human response explicitly grants
 one additional attempt on the same host, apply that answer using `approve` first,
 then use `attempt-exception --receipt` to bind the grant to its immutable
-approval ID/source, task/generation, worker, `expected_used: 10` and
-`attempt_number: 11`. Include `exception_verified: true`, stopped/checked
+approval ID/source, task/generation, worker, `expected_used: 20` and
+`attempt_number: 21`. Include `exception_verified: true`, stopped/checked
 evidence and an exact scope explanation. A generic tool permission or ordinary
 approval is not an attempt exception. Do not infer it from free-form task text.
 
 Read back eligibility. The existing task's next eligible claim consumes the one
-exception and records eleven in both assignment and lifetime counters. Do not
+exception and records attempt 21 and increments the lifetime counter. Do not
 reset counts, create a replacement feature task or pretend a host reassignment.
 One task supports one extra attempt; failed or interrupted acceptance cannot
 renew that grant. Other ownership, dependencies, access and publication rules

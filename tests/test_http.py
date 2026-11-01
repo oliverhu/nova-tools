@@ -64,16 +64,16 @@ class HTTPTests(unittest.TestCase):
         self.request('/api/tasks/' + ident + '/finish', 'oliver-mini', {
             'claim_token': claim['claim_token'], 'generation': 1, 'step': 0,
             'outcome': 'pending_external_approval', 'receipt': {
-                'summary': 'Ten attempts settled', 'execution_stopped': True, 'fix_attempts_used': 10}})
+                'summary': 'Twenty attempts settled', 'execution_stopped': True, 'fix_attempts_used': 20}})
         source = {'thread_id': 'main', 'question_id': 'one-extra', 'message_id': 'actual-yes'}
         _, raw, _ = self.request('/api/approvals/apply', 'oliver-mini', {
             'source': source, 'decision': 'approved', 'decision_verified': True,
-            'response': 'Approve attempt 11', 'scope': 'One attempt on Mini', 'tasks': [{
+            'response': 'Approve attempt 21', 'scope': 'One attempt on Mini', 'tasks': [{
                 'id': ident, 'generation': 1, 'claim_token': claim['claim_token'],
-                'execution_stopped': True, 'external_state_checked': True, 'scope_evidence': 'Actual human permits attempt 11'}]})
+                'execution_stopped': True, 'external_state_checked': True, 'scope_evidence': 'Actual human permits attempt 21'}]})
         approval = json.loads(raw)
         body = {'approval_id': approval['approval_id'], 'source': source, 'task': ident, 'generation': 1,
-                'worker': 'oliver-mini', 'expected_used': 10, 'attempt_number': 11,
+                'worker': 'oliver-mini', 'expected_used': 20, 'attempt_number': 21,
                 'scope_evidence': 'Verified actual human exception', 'exception_verified': True,
                 'execution_stopped': True, 'external_state_checked': True}
         url = '/api/attempt-exceptions/apply'
@@ -84,7 +84,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(200, code); self.assertTrue(json.loads(raw)['task']['ready'])
         _, raw, _ = self.request('/api/worker/claim', 'oliver-mini', {'task_id': ident})
         current = json.loads(raw)
-        self.assertEqual(11, current['task']['fix_attempts_used'])
+        self.assertEqual(21, current['task']['fix_attempts_used'])
         self.assertEqual(2, current['task']['generation'])
         code, raw, _ = self.request(url, 'oliver-mini', body)
         self.assertEqual(200, code); self.assertTrue(json.loads(raw)['replayed'])
