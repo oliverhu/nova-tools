@@ -11,6 +11,13 @@
     "bundle_path": "/Users/oliverhu/.local/share/nova-provisioning-export/nova-profiles.tar.gz",
     "sha256": "REPLACE_WITH_EXPORT_SHA256"
   },
+  "credential_sync": {
+    "enabled": false,
+    "install_dir": "~/.local/lib/nova-credential-sync",
+    "data_dir": "~/.local/share/nova-credential-sync",
+    "python": "/usr/bin/python3",
+    "peer": null
+  },
   "coordinator": {
     "worker": null,
     "cluster_host": "pi@192.168.2.13",

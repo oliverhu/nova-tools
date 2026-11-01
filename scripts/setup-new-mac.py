@@ -19,9 +19,10 @@ import uuid
 
 sys.dont_write_bytecode = True
 from mac_provisioning import MAX_BUNDLE, TEAM, private_directory, sha, unpack_bundle, write_new
+import credential_sync_setup
 
 ROOT = Path(__file__).resolve().parents[1]
-PHASES = ("tools", "repositories", "storage", "profiles", "signing", "coordinator", "permissions", "runners")
+PHASES = ("tools", "repositories", "storage", "profiles", "signing", "coordinator", "permissions", "runners", "credential_sync")
 DEPENDENCIES = {"repositories": ("tools",), "storage": ("repositories",),
                 "profiles": ("repositories",), "signing": ("profiles",),
                 "coordinator": ("storage",), "permissions": ("tools",),
@@ -273,6 +274,14 @@ class Setup:
             self.command([sys.executable, script, "preflight", "--runner", role, "--launch-services", "--timeout-seconds", "75"], cwd=self.browser)
         self.report["runner_permissions"] = list(RUNNERS)
 
+    def credential_sync(self):
+        config = self.config.get("credential_sync")
+        if not config or not config.get("enabled"):
+            self.report["credential_sync"] = {"enabled": False, "changes_performed": False}
+            return
+        self.report["credential_sync"] = credential_sync_setup.install(config)
+        self.report["manual_steps"].append("Review the generated public key and enroll it locally on the intended peer using enroll-credential-peer.py. No SSH access or credentials were transferred by setup.")
+
     def run(self):
         for phase in PHASES:
             if phase not in self.phases:
@@ -306,7 +315,9 @@ def main():
     parser.add_argument("--phase", choices=PHASES, action="append", help="Run selected phases and their prerequisites; default: all")
     args = parser.parse_args()
     config = json.loads(args.config.expanduser().read_text())
-    if not isinstance(config, dict) or config.get("schema") != 1 or set(config) != {"schema", "browser_path", "storage", "provisioning", "coordinator"}:
+    required = {"schema", "browser_path", "storage", "provisioning", "coordinator"}
+    if (not isinstance(config, dict) or config.get("schema") != 1
+            or set(config) not in (required, required | {"credential_sync"})):
         parser.error("Use setup/new-mac.example.json; credentials never belong in this file")
     fields = {"storage": {"volume", "volume_uuid", "artifact_root"},
               "provisioning": {"ssh_host", "bundle_path", "sha256"},
@@ -325,6 +336,11 @@ def main():
             or type(coordination["old_worker_stopped"]) is not bool
             or type(coordination["trust_internal_ca"]) is not bool):
         parser.error("Malformed coordinator configuration")
+    if "credential_sync" in config:
+        try:
+            credential_sync_setup.validate(config["credential_sync"])
+        except (ValueError, OSError):
+            parser.error("Invalid credential_sync configuration; verify paths, peer identity and fingerprint")
     phases = set(args.phase or PHASES)
     while True:
         expanded = phases | {dependency for phase in phases for dependency in DEPENDENCIES.get(phase, ())}
@@ -336,6 +352,8 @@ def main():
         print(json.dumps({"mode": "plan", "phases": phases, "formulas": FORMULAS,
                           "browser": config["browser_path"], "runner_families": RUNNERS,
                           "changes_performed": False,
+                          "credential_sync": {"enabled": config.get("credential_sync", {}).get("enabled", False),
+                                              "peer_enrollment": "explicit local review on peer", "automatic_transfer": False},
                           "manual": ["Xcode/Apple account sign-in", "Existing signing private-key import",
                                      "SSH/GitHub authentication and verified host keys", "macOS and Codex consent"]}, indent=2))
         return 0

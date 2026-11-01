@@ -35,6 +35,18 @@ setup/*.local.json
 *.log
 logs/
 
+# Named credential-sync runtime is never source, including test/private identities.
+credentials/
+identity/
+peer.json
+baselines*.json
+store.json
+installation.json
+setup-binding.json
+id_ed25519*
+known_hosts
+authorized_keys
+
 # Generated distribution packages and build output.
 dist/
 build/

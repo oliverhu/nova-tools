@@ -9,6 +9,8 @@ uploads to Apple.
 
 **Implementation status:** authored and statically reviewed; not executed or
 tested on a new Mac. The request was to prepare the script without testing it now.
+The optional credential-sync phase has separate isolated tests with temporary
+homes/stores and synthetic files; those do not qualify the complete new-Mac setup.
 
 ## Before running
 
@@ -102,6 +104,27 @@ Synthesizing access, opens the appropriate System Settings pane, then reads the
 actual permission state. You approve the macOS prompts. There are no synthetic
 clicks on permission dialogs, TCC database edits, resets or Full Disk Access
 shortcuts. A denied or restart-required permission remains pending.
+
+## Optional named-credential sync
+
+See [credential-sync enrollment](credential-sync.md) for the separate local
+installation and peer public-key review. Set `credential_sync.enabled` to `true`
+only when deliberately enrolling that machine. It defaults to `false`; existing
+schema-1 setup files without this section keep working. This independent phase
+does not need toolchain/provisioning/permission phases:
+
+```sh
+python3 scripts/setup-new-mac.py --config "$HOME/.config/nova-setup/new-mac.json" \
+  --phase credential_sync
+python3 scripts/setup-new-mac.py --config "$HOME/.config/nova-setup/new-mac.json" \
+  --phase credential_sync --apply
+```
+
+The first command remains read-only. Applying the phase creates a distinct local
+SSH key and empty private store; it does not connect, enroll a key remotely, copy
+credentials, enable Remote Login, or start any background service. Peer enrollment
+requires a second explicit local command on the receiving machine. Setup completion
+means locally prepared, not verified SSH access or a successful credential transfer.
 
 All five existing Nova runner families are built and signed through the browser's
 guarded SSD setup helper, then launched only for their permission-only removable
