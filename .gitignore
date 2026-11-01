@@ -34,4 +34,5 @@ logs/
 # Generated distribution packages and build output.
 dist/
 build/
+.build/
 client.tar.gz

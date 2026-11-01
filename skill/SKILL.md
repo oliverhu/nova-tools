@@ -146,6 +146,23 @@ field. Keep historical evidence, apply a concrete correction before retrying,
 preserve acceptance checks and verify prior execution has settled. Pending
 External Approval never retries automatically, regardless of remaining budget.
 
+## A human-approved single extra attempt
+
+The default remains ten attempts. If the actual human response explicitly grants
+one additional attempt on the same host, apply that answer using `approve` first,
+then use `attempt-exception --receipt` to bind the grant to its immutable
+approval ID/source, task/generation, worker, `expected_used: 10` and
+`attempt_number: 11`. Include `exception_verified: true`, stopped/checked
+evidence and an exact scope explanation. A generic tool permission or ordinary
+approval is not an attempt exception. Do not infer it from free-form task text.
+
+Read back eligibility. The existing task's next eligible claim consumes the one
+exception and records eleven in both assignment and lifetime counters. Do not
+reset counts, create a replacement feature task or pretend a host reassignment.
+One task supports one extra attempt; failed or interrupted acceptance cannot
+renew that grant. Other ownership, dependencies, access and publication rules
+still apply. A later human approval wait invalidates an unconsumed older grant.
+
 ## UI-test tooling blockers
 
 When a feature is blocked by broken UI tools, collectors, fixture startup or

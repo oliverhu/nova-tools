@@ -89,6 +89,30 @@ true` and `evidence` explaining settlement and a concrete correction. No unknown
 input/publication may be replayed. Admin `reconcile` remains for abandoned
 legacy tasks; existing holds are not silently reopened by a schema migration.
 
+## Explicit one-attempt exceptions
+
+The ordinary limit remains ten attempts per host assignment. An actual human
+answer may explicitly authorize **one** additional attempt on the same named
+host. Apply the original answer with `approve` first. An ordinary permission
+answer alone never raises a limit; the worker must inspect the primary answer
+and verify that it explicitly grants the extra attempt for that task.
+
+`nova-coord attempt-exception --receipt /absolute/exception.json` binds that
+exception to the immutable applied approval's ID and exact source identity,
+task/generation, current host and used count. Its receipt contains `approval_id`,
+`source`, `task`, `generation`, `worker`, `expected_used: 10`,
+`attempt_number: 11`, descriptive `scope_evidence`, and three true attestations:
+`exception_verified`, `execution_stopped`, `external_state_checked`.
+
+The server accepts this supplemental record only for the currently approved,
+settled queued task at ten. It does not edit the original approval or lower any
+counter. The next eligible claim atomically consumes the exception and records
+attempt eleven in both assignment and lifetime counts. Dependencies, ownership,
+capacity, human stops and normal claim fencing still apply. A failed attempt or
+replayed request cannot renew it. One task supports at most one such exception;
+it does not grant publication authority or a general policy override. Source
+rollout and feature acceptance remain separately recorded.
+
 ## Hourly publish tasks
 
 A durable service timer checks each configured repository on the hour. Workers

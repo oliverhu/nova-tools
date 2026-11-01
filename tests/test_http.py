@@ -53,6 +53,45 @@ class HTTPTests(unittest.TestCase):
     def test_worker_cannot_reconcile(self):
         self.assertEqual(403,self.request("/api/tasks/1234567890abcdef/reconcile","oliver-mini",{})[0])
 
+    def test_bounded_attempt_exception_authenticated_and_single_use_over_http(self):
+        self.request('/api/worker/pulse', 'oliver-mini', {'capacity': {'cpus': 12}})
+        _, raw, _ = self.request('/api/tasks', 'oliver-mini', {
+            'request_key': 'extra-attempt-http', 'title': 'One explicit extra attempt',
+            'requirements': {'worker': 'oliver-mini'}})
+        ident = json.loads(raw)['id']
+        _, raw, _ = self.request('/api/worker/claim', 'oliver-mini', {'task_id': ident})
+        claim = json.loads(raw)
+        self.request('/api/tasks/' + ident + '/finish', 'oliver-mini', {
+            'claim_token': claim['claim_token'], 'generation': 1, 'step': 0,
+            'outcome': 'pending_external_approval', 'receipt': {
+                'summary': 'Ten attempts settled', 'execution_stopped': True, 'fix_attempts_used': 10}})
+        source = {'thread_id': 'main', 'question_id': 'one-extra', 'message_id': 'actual-yes'}
+        _, raw, _ = self.request('/api/approvals/apply', 'oliver-mini', {
+            'source': source, 'decision': 'approved', 'decision_verified': True,
+            'response': 'Approve attempt 11', 'scope': 'One attempt on Mini', 'tasks': [{
+                'id': ident, 'generation': 1, 'claim_token': claim['claim_token'],
+                'execution_stopped': True, 'external_state_checked': True, 'scope_evidence': 'Actual human permits attempt 11'}]})
+        approval = json.loads(raw)
+        body = {'approval_id': approval['approval_id'], 'source': source, 'task': ident, 'generation': 1,
+                'worker': 'oliver-mini', 'expected_used': 10, 'attempt_number': 11,
+                'scope_evidence': 'Verified actual human exception', 'exception_verified': True,
+                'execution_stopped': True, 'external_state_checked': True}
+        url = '/api/attempt-exceptions/apply'
+        self.assertEqual(403, self.request(url, body=body)[0])
+        self.assertEqual(409, self.request(url, 'oliver-mac', body)[0])
+        self.assertEqual(400, self.request(url, 'oliver-mini', {**body, 'attempt_number': 12})[0])
+        code, raw, _ = self.request(url, 'oliver-mini', body)
+        self.assertEqual(200, code); self.assertTrue(json.loads(raw)['task']['ready'])
+        _, raw, _ = self.request('/api/worker/claim', 'oliver-mini', {'task_id': ident})
+        current = json.loads(raw)
+        self.assertEqual(11, current['task']['fix_attempts_used'])
+        self.assertEqual(2, current['task']['generation'])
+        code, raw, _ = self.request(url, 'oliver-mini', body)
+        self.assertEqual(200, code); self.assertTrue(json.loads(raw)['replayed'])
+        self.assertEqual('running', json.loads(raw)['task']['status'])
+        self.assertNotIn(claim['claim_token'].encode(), raw)
+        self.assertNotIn(current['claim_token'].encode(), raw)
+
     def test_admin_can_cancel_queued_task_through_reconcile(self):
         _,raw,_=self.request('/api/tasks',body={'request_key':'cancel-http','title':'Resolved in 0.2.21'})
         ident=json.loads(raw)['id'];url='/api/tasks/'+ident+'/reconcile'
