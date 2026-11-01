@@ -30,8 +30,9 @@ running task or infer that an offline worker's processes stopped.
 A routine worker implements, meaningfully tests, and merges its changes into
 main. Rebase/resolve conflicts and rerun affected checks if main advances;
 use normal non-force pushes. Record exact branch/commit/merge and evidence.
-**DO NOT PUBLISH as part of ordinary work.** Publication happens only in a
-separate service-generated hourly publish task.
+**DO NOT PUBLISH as part of ordinary work.** Automatic publication uses a
+separate service-generated hourly publish task. Explicit user-authorized manual
+publication follows the manual path below without waiting for the hourly check.
 
 Report progress with `heartbeat ID --progress "..."`. Use `run ID -- command`
 for long commands; its watchdog stops owned processes on service rejection or
@@ -104,7 +105,6 @@ current generation, stopped/checked evidence, worker/dependencies and
 "reason":"...verified artifact and classification evidence..."}`. This audits
 a classification correction without inventing external approval. Preserve real
 human stops, all acceptance requirements, receipts and attempt history.
-
 
 When the only blocker is waiting for another worker or prerequisite, use
 `wait ID --receipt /path.json` instead of marking the task blocked. The receipt
@@ -179,7 +179,7 @@ The same repository/commit is not queued twice. A later merged commit gets its
 own task at the next hourly check, even if an earlier task is still running or
 failed. Workers check actual release state and never downgrade a newer release.
 
-Only a claimed publish task may run the normal signed/notarized release flow.
+For automatic publication, only a claimed publish task may run the normal signed/notarized release flow.
 Use `publish ID --receipt /new/receipt.json --command ...` or the existing
 publisher with `publish-permit`. That check verifies task ownership, not a global
 lock. Verify the actual public artifact. A successful receipt requires
@@ -204,6 +204,30 @@ and `submitted_for_review: false`. An archive or simulator build is not an uploa
 Record actual Apple acceptance. If either platform fails, retain partial delivery
 evidence and report incomplete delivery; avoid repeating a successful publication.
 
+## Explicit manual publication
+
+The user authorized this additional path on 2026-10-31. An explicit request such
+as "publish it now" authorizes immediate publication of the named, prepared
+change. Do not require another confirmation or wait for the hourly scheduler.
+Keep the hourly flow unchanged; ordinary implementation requests do not imply
+this exception.
+
+Record the user's instruction, exact source/artifact, destination and scope in
+one deduplicated queue task. The current API reserves publish-kind tasks for the
+hourly scheduler, so record an explicitly named manual-publication task as
+`task_type: work`, claim it normally, and supervise execution with `nova-coord run`.
+The explicit user authorization overrides its default ordinary-work no-publish
+instruction. Do not mislabel it as a service-generated task or modify another
+worker's claim. Check for active publication and inspect actual external state
+before executing or retrying; preserve all release validation and real approval
+blocks. Finish with a receipt identifying manual authorization, published scope,
+public verification and settled operations.
+
+For a website-only request, publish the reviewed website change while preserving
+the latest public installer, release metadata and live infrastructure. Do not
+bump/rebuild the app or mark unrelated app source as published. A full app release
+still requires its exact signed/notarized artifacts and public verification.
+
 ## Polling
 
 Keep the existing 15-minute queue-worker schedules. Continue active work rather
@@ -218,10 +242,12 @@ Notify only completion, material failure, or a specific required human action.
 On Mini, use the persistent `nova-artifacts-mac` SSH alias for recordings in the
 Mac intake root `/Users/oliverhu/Documents/ChatGPT/exports/nova-task-intake`.
 It uses a dedicated local key, a verified host-key pin and fresh BatchMode
-authentication without SSH-agent or ControlMaster dependence. The Mac permits
-only this read-only contract; do not use arbitrary shell commands or SCP:
+authentication without SSH-agent or ControlMaster dependence. Its scoped
+`AddressFamily inet` setting matches the Mac's Mini source-IP restriction.
+The Mac permits only this read-only contract; do not use arbitrary shell
+commands or SCP:
 
-- `ssh nova-artifacts-mac ping`: connection/allowed-root JSON.
+- `ssh nova-artifacts-mac ping`: connection/service JSON.
 - `ssh nova-artifacts-mac stat 'RELATIVE/PATH'`: size and SHA256 JSON.
 - `ssh nova-artifacts-mac fetch 'RELATIVE/PATH'`: raw file bytes.
 

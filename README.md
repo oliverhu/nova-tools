@@ -1,4 +1,25 @@
-# Nova task queue
+# Nova tools
+
+Source for Nova engineering tools maintained outside
+[`nova-browser`](https://github.com/oliverhu/nova-browser). This repository contains:
+
+- `coordinator/` and `web/`: the task queue API, CLI, local gateway and dashboard.
+- `deploy/` and `scripts/`: service deployment, packaging and client installation.
+- `tests/`: coordinator regression and dashboard checks.
+- `skill/SKILL.md`: the coordination workflow installed on both workers.
+- `artifact-transfer/`: the restricted, read-only SSH artifact helper and setup notes.
+
+The coordinator's original 18 source commits are preserved through `cc526e0`.
+The artifact helper is copied from the deployed Mac helper without changing its
+behavior. Browser implementation and browser-specific test tools remain in
+`nova-browser`.
+
+Only source and reusable documentation belong here. Keep live client configuration,
+credentials, SSH keys, task databases, claims, approval journals, recordings,
+logs, validation receipts and generated payloads outside Git. Pushing this
+repository does not deploy the service or replace an installed client.
+
+## Nova task queue
 
 A private Kubernetes task queue for `oliver-mac` and `oliver-mini`. Both workers
 claim untaken tasks atomically, implement and test the change, and merge it into

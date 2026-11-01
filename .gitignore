@@ -4,3 +4,34 @@ __pycache__/
 .venv/
 .DS_Store
 test-results/
+
+# Live installations, credentials and machine/task state are not source.
+.local/
+.env
+.env.*
+!.env.example
+client.json
+claims/
+approvals/
+approval-journal/
+journals/
+receipts/
+update-receipts/
+submissions/
+runtime/
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+*.mobileprovision
+*.sqlite*
+*.db
+*.db-*
+*.log
+logs/
+
+# Generated distribution packages and build output.
+dist/
+build/
+client.tar.gz
