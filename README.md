@@ -43,11 +43,15 @@ protect mutations; internal CA verification protects HTTPS. Browser OS trust is
 separate from client trust. No public ingress or tunnel is installed. Never
 print client configurations, credentials, or claim tokens.
 
-The existing chat workers check every **15 minutes**, and immediately check
-again after completed, stopped or blocked work settles. No eligible task means
-a quiet return until the next wake. There are no peer grants or intermediate
-coordinator approval stages. The background capacity reporter observes branch
-heads and updates the inbox; it does not execute engineering tasks or models.
+The existing **Nova coordination service** chat checks every **15 minutes** and
+wakes an eligible idle **Nova development air** or **Nova development mini**
+session only when the service has ready work. Both independent worker polling
+automations are paused. The dispatcher never claims on a worker's behalf and
+checks current session/queue state to avoid duplicate wake-ups. Workers continue
+their own claims and immediately pull again after settled work, stopping when
+no eligible task remains. Pending approvals and dependency waits do not wake them.
+The background capacity/repository reporters stay running without invoking models.
+
 
 ## Claims and recovery
 

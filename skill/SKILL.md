@@ -247,11 +247,24 @@ still requires its exact signed/notarized artifacts and public verification.
 
 ## Polling
 
-Keep the existing 15-minute queue-worker schedules. Continue active work rather
-than launching a duplicate. After completion OR any stopped/blocked execution
-settles, immediately check `next` once in the same run. If no eligible work is
-available, stop quietly until the next wake. Do not create per-task schedules.
-The capacity reporter does not run models or execute tasks by itself.
+The user changed scheduling on 2026-11-01: only the existing **Nova coordination
+service** chat polls every 15 minutes. The independent **Nova development air**
+and **Nova development mini** idle-poll automations remain paused. A previously
+queued heartbeat must not reactivate those schedules.
+
+The coordination chat checks authoritative service readiness and worker/session
+availability, then sends a concrete task wake-up only to an eligible idle session.
+It does not claim work on a worker's behalf. Workers atomically claim through the
+service, continue their own existing claim first, and execute directly in their
+existing main session. Do not duplicate active work or add peer approval stages.
+Pending External Approval, unresolved dependencies and retry cooldowns are not
+reasons to wake a worker.
+
+After completion OR any stopped/blocked execution settles, immediately check
+`next` once in the same run. Continue eligible tasks until none remain, then stop
+until a dispatcher wake-up or direct human request. Do not create additional
+worker or per-task schedules. Keep the lightweight capacity/repository reporters
+running; these do not invoke models or execute engineering tasks.
 Notify only completion, material failure, or a specific required human action.
 
 ## Reference artifacts from oliver-mac
