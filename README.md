@@ -46,11 +46,15 @@ protect mutations; internal CA verification protects HTTPS. Browser OS trust is
 separate from client trust. No public ingress or tunnel is installed. Never
 print client configurations, credentials, or claim tokens.
 
-The existing chat workers check every **15 minutes**, and immediately check
-again after completed, stopped or blocked work settles. No eligible task means
-a quiet return until the next wake. There are no peer grants or intermediate
-coordinator approval stages. The background capacity reporter observes branch
-heads and updates the inbox; it does not execute engineering tasks or models.
+The existing **Nova coordination service** chat checks every **15 minutes** and
+wakes an eligible idle **Nova development air** or **Nova development mini**
+session only when the service has ready work. Both independent worker polling
+automations are paused. The dispatcher never claims on a worker's behalf and
+checks current session/queue state to avoid duplicate wake-ups. Workers continue
+their own claims and immediately pull again after settled work, stopping when
+no eligible task remains. Pending approvals and dependency waits do not wake them.
+The background capacity/repository reporters stay running without invoking models.
+
 
 ## Claims and recovery
 
@@ -94,7 +98,7 @@ legacy tasks; existing holds are not silently reopened by a schema migration.
 
 ## Explicit one-attempt exceptions
 
-The ordinary limit remains ten attempts per host assignment. An actual human
+The ordinary limit remains twenty attempts per host assignment. An actual human
 answer may explicitly authorize **one** additional attempt on the same named
 host. Apply the original answer with `approve` first. An ordinary permission
 answer alone never raises a limit; the worker must inspect the primary answer
@@ -103,14 +107,14 @@ and verify that it explicitly grants the extra attempt for that task.
 `nova-coord attempt-exception --receipt /absolute/exception.json` binds that
 exception to the immutable applied approval's ID and exact source identity,
 task/generation, current host and used count. Its receipt contains `approval_id`,
-`source`, `task`, `generation`, `worker`, `expected_used: 10`,
-`attempt_number: 11`, descriptive `scope_evidence`, and three true attestations:
+`source`, `task`, `generation`, `worker`, `expected_used: 20`,
+`attempt_number: 21`, descriptive `scope_evidence`, and three true attestations:
 `exception_verified`, `execution_stopped`, `external_state_checked`.
 
 The server accepts this supplemental record only for the currently approved,
-settled queued task at ten. It does not edit the original approval or lower any
+settled queued task at twenty. It does not edit the original approval or lower any
 counter. The next eligible claim atomically consumes the exception and records
-attempt eleven in both assignment and lifetime counts. Dependencies, ownership,
+attempt 21 in the assignment count and increments the lifetime count. Dependencies, ownership,
 capacity, human stops and normal claim fencing still apply. A failed attempt or
 replayed request cannot renew it. One task supports at most one such exception;
 it does not grant publication authority or a general policy override. Source
@@ -221,7 +225,7 @@ retaining other dependencies and all acceptance evidence. Repair completion
 allows the feature to resume its missing checks; it does not count as feature
 acceptance. Product failures and missing account access are classified separately.
 
-The user-set fix-attempt limit is 10 per host assignment for feature and UI-tool
+The user-set fix-attempt limit is 20 per host assignment for feature and UI-tool
 repairs. A new host resets that count; at most 6 host reassignments are allowed
 per task. Lifetime attempts and historical receipts remain available.
 
@@ -249,8 +253,9 @@ current `generation`, settled execution, checked external state and evidence.
 Returning it to the queue requires `action: retry`, `approval_received: true`
 and evidence of the verified approval. Existing approval requests are not resubmitted.
 
-Technical `blocked` tasks become claimable automatically after 15 minutes. A
-different available host is preferred; explicit host/capacity requirements and
+Technical `blocked` tasks become claimable automatically after 15 minutes. They
+stay on the current host until its 20-attempt budget is exhausted, then move to
+another eligible host. Explicit scheduling handoffs, host/capacity requirements and
 dependencies still apply. A running claim is never reassigned. The UI distinguishes
 the actual next worker from the last worker and shows retry readiness. Workers
 read previous evidence and inspect external state before executing a correction.
@@ -317,3 +322,24 @@ The dashboard labels approved queued/running work separately from an unanswered
 approval wait. Approval never means tests passed or removes prerequisite/capacity
 checks. `/api/state` advertises `capabilities.approval_receipts: 1`; use the installed
 client and deployed capability rather than an older copied server-source cache.
+
+## Studio migration
+
+The service recognizes `oliverhu-mac-studio`, `oliverhu-mac-studio-vm1`,
+and `oliverhu-mac-studio-vm2` in addition to the two legacy identities. Enroll a
+distinct random credential for each new worker in the existing private service
+Secret before installing its client. Never copy an old worker identity into a VM.
+Existing credentials, database, task ownership and approval receipts are retained.
+
+After verifying destination workers and settling source execution, an authenticated
+administrator can POST `/api/workers/oliver-mac/state` (or another known worker)
+with `{"paused": true, "reason": "Verified migration to Studio"}`. Running or held
+claims prevent this operation. Retirement is durable across reporter pulses and
+service restarts; it does not requeue tasks or change approval holds. Stop the
+old reporters and move schedules only at verified cutover. The same audited API
+with `paused: false` supports an explicit rollback.
+
+The Studio host uses internal build storage by the user's explicit choice. Each
+VM uses its own 1 TB allocation on the new 2 TB external SSD. Configure guards
+from actual mounted identities and measured resources; do not reuse old host
+configuration or report host memory already allocated to guests as available.

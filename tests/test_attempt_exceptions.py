@@ -12,12 +12,12 @@ class AttemptExceptionTests(unittest.TestCase):
         self.path = Path(self.temp.name) / 'db'
         self.store = Store(self.path, clock=lambda: 1000)
         for worker in ('oliver-mini', 'oliver-mac'):
-            self.store.pulse(worker, {'capacity': {'cpus': 12}})
+            self.store.pulse(worker, {'capacity': {'cpus': 22}})
 
     def tearDown(self):
         self.temp.cleanup()
 
-    def prepared(self, name='feature', used=10):
+    def prepared(self, name='feature', used=20):
         task = self.store.submit('oliver-mini', {'request_key': name, 'title': name,
             'requirements': {'worker': 'oliver-mini'}})
         claim = self.store.claim('oliver-mini', task['id'])
@@ -25,13 +25,13 @@ class AttemptExceptionTests(unittest.TestCase):
         source = {'thread_id': 'main', 'question_id': name, 'message_id': name + '-human-answer'}
         approval = self.store.apply_approval('oliver-mini', {
             'source': source, 'decision': 'approved', 'decision_verified': True,
-            'response': 'Approve exactly attempt 11 on Mini', 'scope': 'One bounded extra attempt; preserve all history',
+            'response': 'Approve exactly attempt 21 on Mini', 'scope': 'One bounded extra attempt; preserve all history',
             'tasks': [{'id': task['id'], 'generation': 1, 'claim_token': claim['claim_token'],
                        'execution_stopped': True, 'external_state_checked': True,
-                       'scope_evidence': 'The actual human answer explicitly permits this task attempt 11.'}]})
+                       'scope_evidence': 'The actual human answer explicitly permits this task attempt 21.'}]})
         return {'approval_id': approval['approval_id'], 'source': source, 'task': task['id'],
-                'generation': 1, 'worker': 'oliver-mini', 'expected_used': 10, 'attempt_number': 11,
-                'scope_evidence': 'Verified exact human response: Approve exactly attempt 11 on Mini',
+                'generation': 1, 'worker': 'oliver-mini', 'expected_used': 20, 'attempt_number': 21,
+                'scope_evidence': 'Verified exact human response: Approve exactly attempt 21 on Mini',
                 'exception_verified': True, 'execution_stopped': True, 'external_state_checked': True}
 
     def finish(self, claim, outcome, count):
@@ -47,14 +47,14 @@ class AttemptExceptionTests(unittest.TestCase):
         self.assertIsNone(self.store.claim('oliver-mini', body['task'])['task'])
         grant = self.store.apply_attempt_exception('oliver-mini', body)
         self.assertTrue(grant['task']['ready'])
-        self.assertEqual(11, grant['task']['fix_attempt_limit'])
+        self.assertEqual(21, grant['task']['fix_attempt_limit'])
         for key in ('generation', 'receipts', 'fix_attempts_used', 'total_fix_attempts', 'reassignment_count', 'result'):
             self.assertEqual(before[key], grant['task'][key] if key != 'receipts' else self.store.detail(body['task'])[key])
         claim = self.store.claim('oliver-mini', body['task'])
-        self.assertEqual(11, claim['task']['fix_attempts_used'])
-        self.assertEqual(11, claim['task']['total_fix_attempts'])
+        self.assertEqual(21, claim['task']['fix_attempts_used'])
+        self.assertEqual(21, claim['task']['total_fix_attempts'])
         self.assertEqual(2, claim['task']['attempt_exception']['consumed_generation'])
-        self.finish(claim, 'completed', 11)
+        self.finish(claim, 'completed', 21)
         self.assertEqual('completed', self.store.detail(body['task'])['status'])
 
     def test_exception_is_consumed_atomically_and_never_replayed_after_failure(self):
@@ -66,20 +66,20 @@ class AttemptExceptionTests(unittest.TestCase):
             claims = list(pool.map(lambda _: self.store.claim('oliver-mini', body['task']), range(8)))
         successes = [c for c in claims if c['task']]
         self.assertEqual(1, len(successes))
-        self.finish(successes[0], 'blocked', 11)
+        self.finish(successes[0], 'blocked', 21)
         self.store = Store(self.path, clock=lambda: 3000)
-        self.store.pulse('oliver-mini', {'capacity': {'cpus': 12}})
+        self.store.pulse('oliver-mini', {'capacity': {'cpus': 22}})
         replay = self.store.apply_attempt_exception('oliver-mini', body)
         self.assertTrue(replay['replayed'])
         self.assertIsNone(self.store.claim('oliver-mini', body['task'])['task'])
-        self.assertEqual(11, self.store.detail(body['task'])['total_fix_attempts'])
+        self.assertEqual(21, self.store.detail(body['task'])['total_fix_attempts'])
         changed = {**body, 'scope_evidence': 'Different evidence cannot renew the old permission'}
         with self.assertRaises(Conflict): self.store.apply_attempt_exception('oliver-mini', changed)
 
     def test_missing_unverified_foreign_stale_or_larger_grant_is_rejected(self):
         body = self.prepared()
         for change in ({'exception_verified': False}, {'execution_stopped': False},
-                       {'external_state_checked': False}, {'attempt_number': 12}, {'expected_used': 9},
+                       {'external_state_checked': False}, {'attempt_number': 22}, {'expected_used': 19},
                        {'expected_used': True}, {'generation': 2}, {'worker': 'oliver-mac'},
                        {'source': {**body['source'], 'message_id': 'unrelated'}}, {'approval_id': 'a' * 64}):
             with self.subTest(change=change), self.assertRaises((Conflict, Invalid)):
@@ -89,7 +89,7 @@ class AttemptExceptionTests(unittest.TestCase):
         self.assertEqual({}, self.store.detail(body['task'])['attempt_exception'])
 
     def test_actual_count_generation_host_or_human_stop_change_rejects_grant(self):
-        for index, (field, value) in enumerate((('fix_attempts_used', 9), ('generation', 2),
+        for index, (field, value) in enumerate((('fix_attempts_used', 19), ('generation', 2),
                                                ('attempts_host', 'oliver-mac'), ('status', 'running'))):
             body = self.prepared(str(index))
             with self.store.transaction() as db:
@@ -113,7 +113,7 @@ class AttemptExceptionTests(unittest.TestCase):
         self.assertFalse(grant['task']['ready'])
         self.assertIsNone(self.store.claim('oliver-mini', body['task'])['task'])
         self.store.heartbeat('oliver-mini', active['id'], {'claim_token': claim['claim_token'], 'generation': 1})
-        self.assertEqual(10, self.store.detail(other['task'])['fix_attempt_limit'])
+        self.assertEqual(20, self.store.detail(other['task'])['fix_attempt_limit'])
         self.assertIsNone(self.store.claim('oliver-mini', other['task'])['task'])
         self.finish(claim, 'completed', 1)
         self.assertIsNotNone(self.store.claim('oliver-mini', body['task'])['task'])
@@ -145,3 +145,33 @@ class AttemptExceptionTests(unittest.TestCase):
         self.assertTrue(self.store.apply_attempt_exception('oliver-mini', body)['replayed'])
         self.assertIsNone(self.store.claim('oliver-mini', body['task'])['task'])
 
+
+    def test_raising_policy_preserves_history_and_does_not_expand_old_exception(self):
+        from unittest.mock import patch
+        for consumed in (False, True):
+            with self.subTest(consumed=consumed):
+                with patch('coordinator.store.FIX_ATTEMPT_LIMIT', 10):
+                    body = self.prepared('old-grant-' + str(consumed), used=10)
+                    body.update(expected_used=10, attempt_number=11)
+                    self.store.apply_attempt_exception('oliver-mini', body)
+                    if consumed:
+                        claim = self.store.claim('oliver-mini', body['task'])
+                        self.finish(claim, 'blocked', 11)
+                before = self.store.detail(body['task'])
+                resumed_at = self.store.clock() + 1000
+                self.store = Store(self.path, clock=lambda now=resumed_at: now)
+                self.store.pulse('oliver-mini', {'capacity': {'cpus': 12}})
+                after = self.store.detail(body['task'])
+                self.assertEqual(20, after['fix_attempt_limit'])
+                for key in ('fix_attempts_used', 'total_fix_attempts', 'reassignment_count', 'attempt_exception', 'receipts'):
+                    self.assertEqual(before[key], after[key])
+                claim = self.store.claim('oliver-mini', body['task'])
+                self.assertIsNotNone(claim['task'])
+                self.assertEqual(11 if consumed else 10, claim['task']['fix_attempts_used'])
+                self.finish(claim, 'completed', 12)
+                # A historical 11th-attempt permission never becomes a 21st grant.
+                with self.store.transaction() as db:
+                    db.execute("UPDATE tasks SET status='queued',generation=1,fix_attempts_used=20 WHERE id=?", (body['task'],))
+                self.assertIsNone(self.store.claim('oliver-mini', body['task'])['task'])
+                with self.store.transaction() as db:
+                    db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (body['task'],))

@@ -13,6 +13,7 @@ import time
 import uuid
 from pathlib import Path
 from .approvals import approval_payload, approval_id
+from .workers import WORKERS
 
 
 class Conflict(Exception):
@@ -34,7 +35,7 @@ def bounded(value, name, maximum=12000):
 
 
 RETRY_DELAY = 15 * 60
-FIX_ATTEMPT_LIMIT = 10
+FIX_ATTEMPT_LIMIT = 20
 REASSIGNMENT_LIMIT = 6
 
 
@@ -147,7 +148,7 @@ class Store:
             for lock in db.execute("SELECT * FROM locks").fetchall():
                 self.event(db, "service", "legacy-lock-retired", lock["task_id"], encoded(dict(lock)))
             db.execute("DELETE FROM locks")
-            for name in ("oliver-mac", "oliver-mini"):
+            for name in WORKERS:
                 db.execute("INSERT OR IGNORE INTO workers(id) VALUES(?)", (name,))
 
     @contextlib.contextmanager
@@ -195,14 +196,14 @@ class Store:
         exception = task['attempt_exception']
         if exception and (self.exception_available(row, exception['request']['worker']) or
                 (task['status'] == 'running' and exception.get('consumed_generation') == task['generation'])):
-            task['fix_attempt_limit'] = FIX_ATTEMPT_LIMIT + 1
+            task['fix_attempt_limit'] = max(FIX_ATTEMPT_LIMIT, exception['request']['attempt_number'])
         task['reassignment_limit'] = REASSIGNMENT_LIMIT
         task['execution_policy'] += (
             ' For external approval waits, finish with outcome pending_external_approval; never retry or resubmit approval requests automatically. '
             'Record approval_request with thread_id and question_id in pending receipts. On the actual human response, immediately run approve --receipt with its source message and every explicitly covered pending task/generation, even while another claim is active. Read back queued eligibility before saying resumed; approval is not test qualification. '
             'After a verified human approval response, the last owning worker may explicitly retry with approval_received=true, approval_evidence naming the response, and settled execution/external-state evidence. '
             'Artifact-location waits are scheduling waits; an administrator may correct a mistaken approval classification through defer with an audited wait_correction. '
-            'Settled blocked tasks retry after 15 minutes, up to 10 fix attempts per host assignment. '
+            f'Settled blocked tasks retry after 15 minutes on the current host until {FIX_ATTEMPT_LIMIT} fix attempts are used, then automatically reassign to another eligible host. '
             'An actual claim by a different host resets fix_attempts_used to zero and consumes one of at most 6 lifetime host reassignments. '
             'Same-host retries do not reset the count; the initial assignment is not a reassignment. '
             'Read all prior receipts and inspect external state before any retry side effects; apply a concrete correction. '
@@ -236,7 +237,7 @@ class Store:
         for field in ("memory_gb", "disk_gb", "cpus"):
             if field in requirements and (type(requirements[field]) not in (int, float) or not 0 <= requirements[field] <= 100000):
                 raise Invalid("Resource requirements must be nonnegative numbers")
-        if requirements.get("worker") not in (None, "oliver-mac", "oliver-mini"):
+        if requirements.get("worker") not in (None, *WORKERS):
             raise Invalid("Unknown worker")
         caps = requirements.get("capabilities", [])
         if not isinstance(caps, list) or len(caps) > 20 or not all(isinstance(x, str) and len(x) < 80 for x in caps):
@@ -277,6 +278,17 @@ class Store:
             self.event(db, actor, "submitted", ident, title)
             return self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone())
 
+    def set_worker_state(self, actor, worker, body):
+        if actor != "admin" or worker not in WORKERS or type(body.get("paused")) is not bool:
+            raise Invalid("Administrator, known worker and boolean paused are required")
+        reason = bounded(body.get("reason"), "reason", 2000)
+        with self.transaction() as db:
+            if db.execute("SELECT id FROM tasks WHERE owner=? AND status IN ('running','held')", (worker,)).fetchone():
+                raise Conflict("Settle owned work before changing worker state")
+            db.execute("UPDATE workers SET paused=? WHERE id=?", (int(body["paused"]), worker))
+            self.event(db, actor, "worker-state-changed", None, encoded({"worker": worker, "paused": body["paused"], "reason": reason}))
+            return {"worker": worker, "paused": body["paused"]}
+
     def pulse(self, worker, body):
         capacity = body.get("capacity", {})
         if not isinstance(capacity, dict):
@@ -314,8 +326,11 @@ class Store:
         if not workers:
             return None
         if task['status'] == 'blocked':
-            # Prefer a fresh host for a retry, but do not wait for a busy peer.
-            workers.sort(key=lambda w: (w['id'] == task['last_owner'], w['last_claim'], w['id']))
+            # Automatic retries retain the assignment until its budget is used.
+            # Explicit scheduling handoffs use defer and remain independently routed.
+            if task['attempts_host'] and task['fix_attempts_used'] < FIX_ATTEMPT_LIMIT:
+                return next((w['id'] for w in workers if w['id'] == task['attempts_host']), None)
+            workers.sort(key=lambda w: (w['id'] == task['attempts_host'], w['last_claim'], w['id']))
             return workers[0]['id']
         # Keep subsequent stages with the session that owns the checkout.
         # An unavailable owner can be replaced using its recorded evidence.
@@ -355,7 +370,9 @@ class Store:
         request = exception['request']
         return (task['status'] == 'queued' and request['worker'] == worker == task['attempts_host']
                 and request['generation'] == task['generation']
-                and task['fix_attempts_used'] == FIX_ATTEMPT_LIMIT
+                and request['expected_used'] == FIX_ATTEMPT_LIMIT
+                and request['attempt_number'] == FIX_ATTEMPT_LIMIT + 1
+                and task['fix_attempts_used'] == request['expected_used']
                 and exception['attempt_base'] == task['attempt_base']
                 and exception['reassignment_count'] == task['reassignment_count'])
 
@@ -373,7 +390,8 @@ class Store:
                     'waiting_reason': 'No automatic retries. Resume only after approval is verified.'}
         if row['status'] == 'blocked':
             candidate = self.candidate(db, row)
-            target = json.loads(row['requirements']).get('worker') or candidate
+            target = json.loads(row['requirements']).get('worker') or (
+                row['attempts_host'] if row['fix_attempts_used'] < FIX_ATTEMPT_LIMIT else candidate)
             pending = [dict(db.execute('SELECT id,title,status FROM tasks WHERE id=?', (dep,)).fetchone())
                        for dep in json.loads(row['dependencies'])]
             pending = [d for d in pending if d['status'] != 'completed']
@@ -414,7 +432,7 @@ class Store:
 
     def retry_wait(self, row):
         if row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
-            return '10 attempts on this assignment and 6 lifetime host reassignments exhausted'
+            return f'{FIX_ATTEMPT_LIMIT} attempts on this assignment and {REASSIGNMENT_LIMIT} lifetime host reassignments exhausted'
         if json.loads(row['result']).get('execution_stopped') is not True:
             return 'Prior execution must be confirmed stopped before retry'
         if row['retry_after'] is None:
@@ -453,7 +471,7 @@ class Store:
                 raise Conflict('Running work must be deferred by its owning worker')
             req = json.loads(row['requirements'])
             if 'worker' in body:
-                if body['worker'] not in ('oliver-mac', 'oliver-mini'):
+                if body['worker'] not in WORKERS:
                     raise Invalid('Unknown destination worker')
                 if row['attempts_host'] and body['worker'] != row['attempts_host'] and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
                     raise Conflict('6 host reassignments exhausted')
@@ -658,7 +676,7 @@ class Store:
             return self._approval_readback(db,row)
 
     def apply_approval(self, actor, body):
-        if actor not in ('admin','oliver-mac','oliver-mini'):
+        if actor not in ('admin', *WORKERS):
             raise Conflict('Authenticated approval actor required')
         payload = approval_payload(body)
         ident, serialized = approval_id(payload), encoded(payload)
@@ -708,7 +726,7 @@ class Store:
         must verify the actual human exception and explicitly bind its source.
         This supplemental record does not rewrite the immutable approval payload.
         """
-        if actor not in ('admin', 'oliver-mac', 'oliver-mini'):
+        if actor not in ('admin', *WORKERS):
             raise Conflict('Authenticated approval actor required')
         fields = {'approval_id', 'source', 'task', 'generation', 'worker', 'expected_used',
                   'attempt_number', 'scope_evidence', 'exception_verified', 'execution_stopped', 'external_state_checked'}
@@ -716,11 +734,11 @@ class Store:
             raise Invalid('Exact bounded attempt-exception fields required')
         if any(body.get(k) is not True for k in ('exception_verified', 'execution_stopped', 'external_state_checked')):
             raise Invalid('Verify the explicit human exception and settled execution first')
-        if (body['worker'] not in ('oliver-mac', 'oliver-mini')
+        if (body['worker'] not in WORKERS
                 or type(body['generation']) is not int or body['generation'] < 1
                 or type(body['expected_used']) is not int or body['expected_used'] != FIX_ATTEMPT_LIMIT
                 or type(body['attempt_number']) is not int or body['attempt_number'] != FIX_ATTEMPT_LIMIT + 1):
-            raise Invalid('Only one extra attempt after ten on the named current host is supported')
+            raise Invalid(f'Only one extra attempt after {FIX_ATTEMPT_LIMIT} on the named current host is supported')
         if not re.fullmatch('[0-9a-f]{16}', str(body['task'])) or not re.fullmatch('[0-9a-f]{64}', str(body['approval_id'])):
             raise Invalid('Exact existing task and approval identities required')
         bounded(body['scope_evidence'], 'scope_evidence', 4000)
@@ -746,7 +764,7 @@ class Store:
                     or row['attempts_host'] != body['worker'] or row['fix_attempts_used'] != body['expected_used']
                     or receipt.get('execution_stopped') is not True or receipt.get('human_stop') is True
                     or (actor != 'admin' and (body['worker'] != actor or row['last_owner'] != actor))):
-                raise Conflict('Task must remain settled, approved, queued at ten on its original named host')
+                raise Conflict(f'Task must remain settled, approved, queued at {FIX_ATTEMPT_LIMIT} on its original named host')
             state = self.approval_state(db, row) or {}
             if (state.get('state') != 'approved' or
                     state.get('evidence', {}).get('approval_id') != body['approval_id']):
@@ -809,7 +827,7 @@ class Store:
                 if action in ('retry', 'complete') and body.get('approval_received') is not True:
                     raise Invalid('External approval must be verified before resuming')
             if action == 'retry' and row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
-                raise Conflict('10 attempts and 6 host reassignments exhausted')
+                raise Conflict(f'{FIX_ATTEMPT_LIMIT} attempts and {REASSIGNMENT_LIMIT} host reassignments exhausted')
             if actor != "admin":
                 self.owned(db, actor, ident, body.get("claim_token"), body.get("generation"))
                 if action != "retry":

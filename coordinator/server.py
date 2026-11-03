@@ -12,6 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .store import Store, Conflict, Invalid
+from .workers import WORKERS
 
 
 class Server(ThreadingHTTPServer):
@@ -100,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command=="GET":
             approval=re.fullmatch(r'/api/approvals/([0-9a-f]{64})',path)
             if approval:
-                if actor not in ('admin','oliver-mac','oliver-mini'):
+                if actor not in ('admin', *WORKERS):
                     return self.respond(403,{'error':'Authenticated approval actor required'})
                 return self.respond(200,store.approval_detail(actor,approval[1]))
             if path=="/api/state":
@@ -111,11 +112,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.command=="POST":
             body=self.body()
             if path == '/api/attempt-exceptions/apply':
-                if actor not in ('admin','oliver-mac','oliver-mini'):
+                if actor not in ('admin', *WORKERS):
                     return self.respond(403,{'error':'Authenticated approval actor required'})
                 return self.respond(200,store.apply_attempt_exception(actor,body))
             if path == '/api/approvals/apply':
-                if actor not in ('admin','oliver-mac','oliver-mini'):
+                if actor not in ('admin', *WORKERS):
                     return self.respond(403,{'error':'Authenticated approval actor required'})
                 return self.respond(200,store.apply_approval(actor,body))
             if path == '/api/releases/start':
@@ -125,18 +126,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(repository,str) or not repository.strip():
                     raise Invalid('repository is required')
                 return self.respond(200, {'created_ids':store.tick_releases(repository)})
+            worker_state = re.fullmatch(r"/api/workers/([a-z0-9-]+)/state", path)
+            if worker_state:
+                if actor != "admin":
+                    return self.respond(403, {"error": "Worker state requires administrator identity"})
+                return self.respond(200, store.set_worker_state(actor, worker_state[1], body))
             if path == "/api/repositories/configure":
                 if actor != "admin":
                     return self.respond(403, {"error": "Repository baseline requires administrator identity"})
                 return self.respond(200, store.configure_repository(body))
             if path == "/api/repositories/observe":
-                if actor not in ("oliver-mac", "oliver-mini"):
+                if actor not in WORKERS:
                     return self.respond(403, {"error": "Use a worker identity"})
                 return self.respond(200, store.observe_repository(actor, body))
             if path=="/api/tasks":
                 return self.respond(200,store.submit(actor,body))
             if path in ("/api/worker/pulse","/api/worker/claim"):
-                if actor not in ("oliver-mac","oliver-mini"):
+                if actor not in WORKERS:
                     return self.respond(403,{"error":"Use a worker identity"})
                 result=store.pulse(actor,body) if path.endswith("pulse") else store.claim(actor,body.get("task_id"))
                 return self.respond(200,result)
@@ -149,7 +155,7 @@ class Handler(BaseHTTPRequestHandler):
                     if actor!="admin":
                         return self.respond(403,{"error":"Reconciliation requires administrator identity"})
                     return self.respond(200,store.reconcile(actor,ident,body))
-                if actor not in ("oliver-mac","oliver-mini"):
+                if actor not in WORKERS:
                     return self.respond(403,{"error":"Use the owning worker identity"})
                 return self.respond(200,getattr(store,action)(actor,ident,body))
         self.respond(404,{"error":"Not found"})
@@ -181,8 +187,10 @@ def main():
     p.add_argument("--key",default=os.environ.get("COORD_KEY"))
     args=p.parse_args()
     credentials=json.loads(Path(args.credentials).read_text())
-    if set(credentials)!={"admin","oliver-mac","oliver-mini"} or any(len(x)<32 for x in credentials.values()) or len(set(credentials.values()))!=3:
-        p.error("Three distinct credentials of at least 32 characters are required")
+    if ("admin" not in credentials or not set(credentials).issubset({"admin", *WORKERS})
+            or len(credentials) < 2 or any(not isinstance(x, str) or len(x) < 32 for x in credentials.values())
+            or len(set(credentials.values())) != len(credentials)):
+        p.error("Distinct admin and enrolled worker credentials of at least 32 characters are required")
     if not args.cert and args.host not in ("127.0.0.1","localhost"):
         p.error("TLS is required for network listeners")
     default_hosts=[f'192.168.2.{n}:31866' for n in (2,11,12,13,24)]

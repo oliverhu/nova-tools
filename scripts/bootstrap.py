@@ -14,7 +14,7 @@ import tempfile
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--worker",choices=["oliver-mac","oliver-mini"],required=True)
+    p.add_argument("--worker",choices=["oliver-mac", "oliver-mini", "oliverhu-mac-studio", "oliverhu-mac-studio-vm1", "oliverhu-mac-studio-vm2"],required=True)
     p.add_argument("--cluster-host",default="pi@192.168.2.13")
     p.add_argument("--build-path")
     p.add_argument("--repository-path")

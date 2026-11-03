@@ -228,9 +228,9 @@ class Setup:
     def coordinator(self):
         config = self.config["coordinator"]
         worker = config["worker"]
-        if worker not in ("oliver-mac", "oliver-mini"):
-            raise SetupRequired("Select an existing coordinator worker role only after retiring its old host. Additional worker identities require service enrollment.")
-        if not config.get("old_worker_stopped", False):
+        if worker not in ("oliver-mac", "oliver-mini", "oliverhu-mac-studio", "oliverhu-mac-studio-vm1", "oliverhu-mac-studio-vm2"):
+            raise SetupRequired("Select a recognized worker identity and enroll its unique service credential first.")
+        if worker in ("oliver-mac", "oliver-mini") and not config.get("old_worker_stopped", False):
             raise SetupRequired("Stop/settle the previous host for this worker role, then set old_worker_stopped=true. Do not share a live identity.")
         host = config["cluster_host"]
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]*", host):
@@ -331,7 +331,7 @@ def main():
         if not all(isinstance(value, str) and value for value in config[section].values()):
             parser.error(section + " values must be nonempty strings")
     coordination = config["coordinator"]
-    if (coordination["worker"] not in (None, "oliver-mac", "oliver-mini")
+    if (coordination["worker"] not in (None, "oliver-mac", "oliver-mini", "oliverhu-mac-studio", "oliverhu-mac-studio-vm1", "oliverhu-mac-studio-vm2")
             or not isinstance(coordination["cluster_host"], str)
             or type(coordination["old_worker_stopped"]) is not bool
             or type(coordination["trust_internal_ca"]) is not bool):
