@@ -61,4 +61,22 @@ class ClientTests(unittest.TestCase):
         self.assertIsNone(c.body)
 
 
+    def test_reporter_reserves_guest_capacity_without_inflating_hardware(self):
+        from coordinator.client import Client
+        c = Client.__new__(Client)
+        c.config = {'capacity_limits': {'cpus': 14, 'memory_gb': 48}}
+        c.request = lambda path, body: body['capacity']
+        with patch('coordinator.client.sys.platform', 'darwin'), \
+             patch('coordinator.client.subprocess.check_output', return_value=str(96 * 1024**3).encode()), \
+             patch('coordinator.client.os.cpu_count', return_value=30), \
+             patch('coordinator.client.shutil.disk_usage', return_value=SimpleNamespace(free=500 * 1024**3)):
+            capacity = c.pulse()
+            self.assertEqual(14, capacity['cpus'])
+            self.assertEqual(48, capacity['memory_gb'])
+            c.config['capacity_limits'] = {'cpus': 100, 'memory_gb': 200}
+            capacity = c.pulse()
+            self.assertEqual(30, capacity['cpus'])
+            self.assertEqual(96, capacity['memory_gb'])
+
+
 if __name__=='__main__':unittest.main()

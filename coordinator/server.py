@@ -197,7 +197,7 @@ def main():
     default_hosts += ['nova-coordinator.nova-coordinator.svc.cluster.local','nova-coordinator.nova-coordinator.svc.cluster.local:443']
     default_hosts += [f'127.0.0.1:{args.port}',f'localhost:{args.port}']
     hosts=os.environ.get('COORD_ALLOWED_HOSTS',','.join(default_hosts)).split(',')
-    server=Server((args.host,args.port),Store(args.db),credentials,args.web,allowed_hosts=hosts)
+    server=Server((args.host,args.port),Store(args.db, heavy_worker=os.environ.get("COORD_HEAVY_WORKER") or None),credentials,args.web,allowed_hosts=hosts)
     def hourly_releases():
         while True:
             try:

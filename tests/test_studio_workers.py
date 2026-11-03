@@ -48,3 +48,23 @@ class StudioWorkersTests(unittest.TestCase):
         self.store = Store(self.store.path, clock=lambda: 1000)
         self.store.pulse(worker, {'capacity': {'cpus': 8}})
         self.assertTrue(next(w for w in self.store.snapshot()['workers'] if w['id'] == worker)['paused'])
+
+    def test_heavy_work_waits_for_studio_and_never_falls_back(self):
+        host = STUDIO_WORKERS[0]
+        self.store = Store(self.store.path, clock=lambda: 1000, heavy_worker=host)
+        for old in ('oliver-mac', 'oliver-mini'):
+            self.store.pulse(old, {'capacity': {'cpus': 30, 'memory_gb': 96}})
+        heavy = self.store.submit('admin', {'title': 'Compile engine', 'request_key': 'heavy', 'task_type': 'engine_rebuild'})
+        for worker in (*STUDIO_WORKERS[1:], 'oliver-mac', 'oliver-mini'):
+            self.assertIsNone(self.store.claim(worker, heavy['id'])['task'])
+        self.store.set_worker_state('admin', host, {'paused': True, 'reason': 'Host not ready'})
+        self.assertFalse(self.store.detail(heavy['id'])['ready'])
+        self.assertEqual(host, self.store.detail(heavy['id'])['next_worker'])
+        self.store.set_worker_state('admin', host, {'paused': False, 'reason': 'Host ready'})
+        claim = self.store.claim(host, heavy['id'])
+        self.assertEqual(host, claim['task']['owner'])
+        second = self.store.submit('admin', {'title': 'Second engine', 'request_key': 'heavy2', 'task_type': 'engine_rebuild'})
+        self.assertFalse(self.store.detail(second['id'])['ready'])
+        self.assertIsNone(self.store.claim(STUDIO_WORKERS[1], second['id'])['task'])
+        with self.assertRaises(Invalid):
+            self.store.submit('admin', {'title': 'Bad route', 'request_key': 'bad', 'task_type': 'engine_rebuild', 'requirements': {'worker': STUDIO_WORKERS[1]}})

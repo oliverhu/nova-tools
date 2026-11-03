@@ -50,11 +50,18 @@ class Client:
 
     def pulse(self):
         memory=int(subprocess.check_output(["/usr/sbin/sysctl","-n","hw.memsize"]))/(1024**3) if sys.platform=="darwin" else 0
+        cpus = os.cpu_count() or 1
+        limits = self.config.get("capacity_limits", {})
+        for key, value in limits.items():
+            if key not in ("cpus", "memory_gb") or type(value) not in (int, float) or value <= 0:
+                raise ValueError("Invalid worker capacity limit")
+        memory = min(memory, limits.get("memory_gb", memory))
+        cpus = min(cpus, limits.get("cpus", cpus))
         build_path=self.config.get("build_path",str(Path.home()))
         # Missing external storage must not be substituted with internal disk.
         disk=shutil.disk_usage(build_path).free/(1024**3) if Path(build_path).is_dir() else 0
         reserve=self.config.get("disk_reserve_gb",50)
-        return self.request("/api/worker/pulse",{"capacity":{"memory_gb":round(memory,1),"cpus":os.cpu_count() or 1,
+        return self.request("/api/worker/pulse",{"capacity":{"memory_gb":round(memory,1),"cpus":cpus,
             "disk_gb":round(max(0,disk-reserve),1),"capabilities":self.config.get("capabilities",["macos","development"])}})
 
     def claim(self,ident=None):

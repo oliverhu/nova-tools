@@ -343,3 +343,11 @@ The Studio host uses internal build storage by the user's explicit choice. Each
 VM uses its own 1 TB allocation on the new 2 TB external SSD. Configure guards
 from actual mounted identities and measured resources; do not reuse old host
 configuration or report host memory already allocated to guests as available.
+
+Heavy compilation is reserved for the Studio host. Set `COORD_HEAVY_WORKER`
+to `oliverhu-mac-studio` on the service at migration cutover. Heavy tasks then
+wait for that host, including when it is busy, offline or lacks capacity; they
+never fall back to guests. Existing claims and approval records remain intact.
+The host client reports `capacity_limits: {"cpus": 14, "memory_gb": 48}` while
+two 8-vCPU, 24-GiB guests run. These limits may only reduce measured capacity.
+Pause settled guest work before allocating more memory/CPU to a large host build.

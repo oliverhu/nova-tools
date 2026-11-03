@@ -95,7 +95,10 @@ IOS_UPLOAD_POLICY = (
 
 
 class Store:
-    def __init__(self, path, clock=time.time, lease_seconds=180):
+    def __init__(self, path, clock=time.time, lease_seconds=180, heavy_worker=None):
+        if heavy_worker is not None and heavy_worker not in WORKERS:
+            raise Invalid("Unknown heavy compilation worker")
+        self.heavy_worker = heavy_worker
         self.path, self.clock, self.lease_seconds = str(path), clock, lease_seconds
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
@@ -239,6 +242,8 @@ class Store:
                 raise Invalid("Resource requirements must be nonnegative numbers")
         if requirements.get("worker") not in (None, *WORKERS):
             raise Invalid("Unknown worker")
+        if compute == "heavy" and self.heavy_worker and requirements.get("worker") not in (None, self.heavy_worker):
+            raise Invalid("Heavy compilation requires " + self.heavy_worker)
         caps = requirements.get("capabilities", [])
         if not isinstance(caps, list) or len(caps) > 20 or not all(isinstance(x, str) and len(x) < 80 for x in caps):
             raise Invalid("Invalid capabilities")
@@ -311,6 +316,8 @@ class Store:
             return {"worker": worker, "heartbeat_seconds": 30, "lease_seconds": self.lease_seconds}
 
     def fits(self, task, worker):
+        if task["compute"] == "heavy" and self.heavy_worker and worker["id"] != self.heavy_worker:
+            return False
         req = json.loads(task["requirements"])
         cap = json.loads(worker["capacity"])
         if req.get("worker") and req["worker"] != worker["id"]:
@@ -417,6 +424,8 @@ class Store:
         if not target and previous:
             target = previous['id']
         candidate = self.candidate(db, row)
+        if not target and row['compute'] == 'heavy' and self.heavy_worker:
+            target = self.heavy_worker
         if not target and row['compute'] == 'heavy':
             mini = db.execute("SELECT * FROM workers WHERE id='oliver-mini' AND paused=0 AND seen>?", (self.clock()-90,)).fetchone()
             target = 'oliver-mini' if mini and self.fits(row, mini) else candidate
