@@ -112,3 +112,35 @@ capabilities actually needed by that task, not merely an online heartbeat.
 
 See [the coordination skill](../skill/SKILL.md) for claim/approval commands and
 [new-Mac setup](new-mac-setup.md) for provisioning and explicit installation.
+
+## Coordinator owns instruction synchronization
+
+The user explicitly assigned ongoing upkeep to Coordinator on November 3, 2026.
+The source of truth is the current user-authorized workflow in `nova-tools/main`:
+`skill/SKILL.md` installs as `nova-coordination/SKILL.md`, and the complete
+`skills/mac-vm-setup/` directory installs as `mac-vm-setup/`.
+
+After policy changes land, new enrollment/reconnection, or a client upgrade:
+
+1. Resolve the approved source commit in a separate clean checkout or verified
+   package; preserve developer worktrees and staged work.
+2. Compare all source skill files against installed Studio/VM1/VM2 files. Back up
+   differing local bytes outside discoverable skill folders, install only these
+   two skills, and verify SHA-256 readback on the actual destination. Preserve
+   unrelated skills, local credentials, claims, schedules and OS consent.
+3. Store a private per-host receipt with source commit, expected/observed file
+   hashes, installation paths and timestamp. Keep the expected revision/current
+   host/chat routes in Coordinator's private operational state, never in Git.
+4. Notify all developers and Dispatcher to reread the installed coordination
+   skill at a safe boundary without stopping ongoing work. Obtain readback of the
+   revision/coordination hash. Message delivery and installed bytes are separate
+   from confirmation that an active chat loaded the instructions.
+5. Dispatcher compares the mapped worker's receipt with the expected revision
+   before new assignments and reports stale/missing state to Coordinator. Repair
+   the instructions without claiming work for another actor or inventing approval
+   gates. A client update can replace a skill from an old bundle: recheck it.
+
+Use the existing coordination and dispatcher activity for this upkeep. No new
+timer, worker poll, app restart or service deployment is required. This does not
+authorize Coordinator to retest developer output; content synchronization and
+developer acceptance remain separate responsibilities.

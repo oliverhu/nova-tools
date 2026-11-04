@@ -46,6 +46,16 @@ The current service exposes 20 attempts per host and up to six reassignments;
 read its actual counters and policy before execution. A missing heartbeat does
 not relinquish a claim, and an approval wait is not a technical retry.
 
+Coordinator owns keeping both installed skills current on Studio and both VMs.
+After a source workflow change or worker enrollment/reconnection, synchronize from
+the verified `nova-tools/main` commit, preserve prior local bytes outside skill
+discovery, verify installed file hashes and record a private per-host receipt.
+Notify developers and Dispatcher to reread the coordination skill at a safe
+boundary and record their revision/hash readback. Dispatcher checks the expected
+revision before new assignments and reports stale installations to Coordinator.
+Recheck after client upgrades; use existing activity rather than another timer.
+This maintenance neither restarts active work nor adds Coordinator product tests.
+
 When this skill comes from `nova-tools`, read its current `docs/agent-coordination.md`
 and `skill/SKILL.md` for the operational details. The portable folder remains
 self-contained without them. On another organization/deployment, retain the

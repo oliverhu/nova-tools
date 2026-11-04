@@ -47,6 +47,9 @@ needs only Python 3 on macOS; exit zero means inventory ran, not that the machin
 is ready. The skill is an assisted procedure, not a tested unattended installer.
 The client installer/package continues to install only `skill/SKILL.md` as
 `nova-coordination`; install this additional skill explicitly from the repository.
+Coordinator owns keeping both installed skills synchronized across Studio and the
+two VMs, including developer/Dispatcher reread confirmation. See the
+[instruction synchronization procedure](docs/agent-coordination.md#coordinator-owns-instruction-synchronization).
 
 ## Nova task queue
 

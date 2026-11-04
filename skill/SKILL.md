@@ -32,6 +32,31 @@ IDs or copied credentials. Use the existing human-authorized Nova-to-Nova routin
 for scoped reports. Preserve actual approval blocks and current user instructions.
 The repository's `docs/agent-coordination.md` explains the full role and API mapping.
 
+## Keep installed instructions current
+
+The user assigned **Coordinator ownership of instruction synchronization** on
+2026-11-03. After a workflow/skill change lands in `nova-tools/main`, and when a
+worker is enrolled or reconnected, Coordinator ensures Studio, VM1 and VM2 have
+the current `nova-coordination` and `mac-vm-setup` skill folders. Use a verified
+source commit; preserve differing local files outside skill discovery before
+replacement, verify installed file SHA-256 values, and keep a private per-host
+receipt with source commit, paths and verification time. Never copy credentials,
+claims or OS permission state as part of skill synchronization.
+
+After an update, tell every active developer and Dispatcher to reread their
+installed coordination skill at the next safe boundary while preserving current
+work and claims. Track their readback of the source commit/coordination hash;
+delivered messages alone do not prove the instructions were loaded. Coordinator
+keeps the expected revision and current routes in private operational state.
+This is instruction maintenance, not additional validation of developer results.
+
+Dispatcher checks that the mapped worker's synchronization receipt matches the
+expected revision before new assignments. If stale or unavailable, report it to
+Coordinator for repair; do not claim for the worker, interrupt existing work or
+invent a new approval gate. Recheck after client upgrades, which may install an
+older packaged skill. Reuse existing coordination/dispatch activity: do not add
+another polling automation or restart apps/services just to reload instructions.
+
 ## Work and ownership
 
 Submit each new request once with `add --file /absolute/task.json`, using a
