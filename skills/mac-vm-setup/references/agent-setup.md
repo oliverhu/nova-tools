@@ -21,7 +21,9 @@ chat/remote-host/project mappings and credentials in private machine state.
 A new concurrent machine needs a distinct identity supported by the current
 server/bootstrap/installer and enrolled with its own credential. A replacement
 must first settle the previous owner and reporter. The VM bootstrap must not
-copy another guest's worker credential, SSH identity or app consent record.
+copy another guest's worker credential, SSH host identity or app consent record.
+The explicitly selected shared GitHub client key is separate from these unique
+worker identities; follow the [host baseline](host-baseline.md).
 
 Configure `COORD_HEAVY_WORKER` through the actual deployment process, not by
 editing a local manifest and assuming the server changed. For Nova it selects

@@ -115,6 +115,14 @@ See [the coordination skill](../skill/SKILL.md) for claim/approval commands and
 
 ## Coordinator owns instruction synchronization
 
+Coordinator also maintains the private [host identity baseline](../skills/mac-vm-setup/references/host-baseline.md)
+and per-host readiness/drift receipts. The November 4 user choice shares Studio's
+exact GitHub client key with both VMs; it does not share queue credentials, SSH
+server host identities, app sessions or consent. Keep actual GitHub authentication,
+repository read, signing/provisioning parity and release capabilities distinct.
+Use existing coordination activity after onboarding or material changes; no new
+polling schedule. Missing release readiness does not block unrelated development.
+
 The user explicitly assigned ongoing upkeep to Coordinator on November 3, 2026.
 The source of truth is the current user-authorized workflow in `nova-tools/main`:
 `skill/SKILL.md` installs as `nova-coordination/SKILL.md`, and the complete

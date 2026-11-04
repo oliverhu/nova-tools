@@ -1,6 +1,14 @@
 {
   "schema": 1,
   "purpose": "Planning and acceptance only; not consumed by Tart or Nova",
+  "identity_baseline": {
+    "private_manifest_path": null,
+    "revision": null,
+    "github_policy": "shared_host_key",
+    "github_public_fingerprint": null,
+    "owner": "coordinator",
+    "source_gaps": []
+  },
   "host": {
     "hostname": null,
     "architecture": null,

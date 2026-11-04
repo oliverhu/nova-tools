@@ -6,6 +6,12 @@ old migration receipt does not establish guest access. Keep these stages distinc
 identity configured, SSH authenticated, repository readable, and normal push
 verified. If GitHub is outside the machine's workload, record `not requested`.
 
+Choose the credential policy before enrollment. On November 4, 2026 the Nova user
+explicitly selected the coordinator host's **same private GitHub key** on both
+VMs. Follow [the versioned host baseline](host-baseline.md), preserving old keys
+and registrations. This supersedes the earlier independent GitHub-key default for
+these VMs; it does not copy SSH server host keys, queue credentials or OS sessions.
+
 ## Onboarding checks
 
 1. Inspect the intended repository's fetch/push URLs and effective SSH settings
@@ -16,7 +22,7 @@ verified. If GitHub is outside the machine's workload, record `not requested`.
 2. Compare the selected `.pub` fingerprint (`ssh-keygen -lf KEY.pub`) with managed
    enrollment evidence. Check ownership and modes: normally the worker owns
    `.ssh` at `0700` and private key/config at `0600`. Do not borrow another
-   worker's key or assume a filename identifies the account. Establish host-key
+   worker's key outside the selected shared-host policy or assume a filename identifies the account. Establish host-key
    trust from an existing verified pin or GitHub's official fingerprints before
    connecting; neither an unverified keyscan nor disabling checking is sufficient.
 3. Make one bounded, noninteractive authentication check through that configured
@@ -76,7 +82,9 @@ as recovered with cause unresolved; preserve the earlier failure and do not rota
 the key. If account/repository restrictions or explicit revocation are established,
 use the supported owner/provider resolution rather than an alternate identity.
 
-When onboarding or repair authorizes a new worker key, create it at a new private
+For the shared-host policy, securely provision the selected existing host key;
+do not generate/register another key merely because a VM is new. When a different
+onboarding or repair scope authorizes a new worker key, create it at a new private
 path on that worker and register only its public key through the intended owner's
 supported interface. Choose access limited to the authorized repositories. Preserve
 old files and registrations unless removal is separately in scope. Back up and

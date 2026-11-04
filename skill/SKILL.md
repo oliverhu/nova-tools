@@ -57,6 +57,18 @@ invent a new approval gate. Recheck after client upgrades, which may install an
 older packaged skill. Reuse existing coordination/dispatch activity: do not add
 another polling automation or restart apps/services just to reload instructions.
 
+Coordinator also owns the private, versioned host identity baseline and each
+machine's readiness receipts described in `mac-vm-setup/references/host-baseline.md`.
+The user's selected Nova policy shares the coordinator's exact GitHub client key
+and selected provisioning identities; SSH server keys, queue credentials, OS
+consent and machine/chat bindings remain individual. Record expected public
+fingerprints, profile revisions and actual capability gaps. Compare after
+onboarding, asset renewal, VM restore or a reported access failure through
+existing coordination activity. Dispatcher requires the capabilities relevant
+to the assigned task; installed assets alone do not establish account access,
+signing use, notarization or release readiness. Repair only the differing
+component and reuse current evidence rather than repeating product validation.
+
 ## Work and ownership
 
 Submit each new request once with `add --file /absolute/task.json`, using a

@@ -6,7 +6,7 @@ Set distinct host/computer names, guest account and VM name. Discover the actual
 
 Log in through the guest desktop and finish supported first-launch setup. Change template/default credentials through normal account settings before exposing the guest beyond its intended network. Clone the unpersonalized base before enrolling keys/accounts. For an already personalized image, explicitly resolve duplicated host, SSH and worker identities.
 
-Discover IPs using the correct Tart home and `tart ip`; DHCP changes. Enable only requested remote access. Create independent SSH keys and enroll their public keys. Pin host keys using independently trusted fingerprints; `ssh-keyscan` alone is not authentication. Use `IdentitiesOnly=yes`, `BatchMode=yes` and strict checking for transfers. Reconcile changed pins rather than disable checking.
+Discover IPs using the correct Tart home and `tart ip`; DHCP changes. Enable only requested remote access. Keep SSH server host keys distinct. Select client credentials through the [host baseline](host-baseline.md): the Nova user chose the coordinator host's exact GitHub private key for both VMs; other SSH purposes retain their separately authorized identities. Pin host keys using independently trusted fingerprints; `ssh-keyscan` alone is not authentication. Use `IdentitiesOnly=yes`, `BatchMode=yes` and strict checking for transfers. Reconcile changed pins rather than disable checking.
 
 GitHub, host-to-guest SSH, queue access and Codex remote connection are separate checks. A forced-command read-only artifact alias is not a general shell/provisioning route. Test fresh noninteractive access without depending on old control sockets or forwarded agents.
 

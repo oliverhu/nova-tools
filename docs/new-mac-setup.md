@@ -22,10 +22,16 @@ homes/stores and synthetic files; those do not qualify the complete new-Mac setu
    accept its license and install the iOS platform. Sign into the existing Apple
    Developer team `2243E5YVZ9` in Xcode. Use Python 3.9 or newer supplied by Xcode or
    your existing toolchain to start the script.
-2. Enroll this Mac's own SSH public key for GitHub and the selected trusted
+2. Follow the [host identity baseline](../skills/mac-vm-setup/references/host-baseline.md).
+   Nova VMs use the coordinator host's exact GitHub client key by explicit user
+   choice; provision that named pair through the established private channel and
+   retain existing keys for rollback. Other machines use their selected policy.
+   Enroll the selected public key for the trusted
    provisioning source/cluster host. Verify their host-key fingerprints through
    your existing trusted device. The script requires strict known-host checking
-   for private transfers; it never copies private SSH keys or auto-trusts a host.
+   for private transfers; the legacy setup script itself never copies private SSH
+   keys or auto-trusts a host. Shared GitHub-key provisioning is the separate
+   scoped host-to-guest step above.
    `nova-signing-source` is a new, normal SSH alias you configure for the source
    Mac. Do not repurpose the restricted `nova-artifacts-mac` key: that route is
    deliberately limited to reference artifacts.
@@ -156,6 +162,13 @@ CloudKit. Existing differing files are preserved. Existing release scripts retai
 their complete entitlement and signing checks; onboarding is not release validation.
 
 ## Resume and reporting
+
+Use the portable skill's versioned identity baseline and `identity_baseline.py`
+for repeatable profile installation and drift checks on Studio and each VM.
+Source gaps, missing Xcode login, and unverified signing/notarization remain
+explicit capability gaps; they are not resolved by sharing the GitHub key.
+Coordinator tracks the expected revision and task-specific readiness; see
+[host-derived onboarding](../skills/mac-vm-setup/references/host-baseline.md).
 
 Each applied invocation writes a private report/log directory under
 `~/.local/state/nova-setup/`. No credentials appear in the report. Exit `78` means

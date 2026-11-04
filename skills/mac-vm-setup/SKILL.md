@@ -25,7 +25,7 @@ Determine roles, VM count, workload, available memory, chosen storage and migrat
 ## Workflow
 
 1. **Host and storage:** [references/host-storage.md](references/host-storage.md). Budget memory and real disk headroom, verify storage identities, install Tart and establish a recoverable layout and stable launch behavior.
-2. **Guest and toolchain:** [references/guest-toolchain.md](references/guest-toolchain.md). Give each guest independent identities, SSH trust, source checkout, Xcode and build-storage records. Qualify the compiler and requested simulator separately.
+2. **Guest and toolchain:** [references/guest-toolchain.md](references/guest-toolchain.md). Give each guest distinct machine/worker identities, SSH host trust, source checkout, Xcode and build-storage records. Use the selected shared-host GitHub/signing policy from [the host baseline](references/host-baseline.md); machine identity and client credentials are separate. Qualify the compiler and requested simulator separately.
 3. **Access and signing:** [references/permissions-signing.md](references/permissions-signing.md). Qualify the actual execution actor on each machine. For development hosts and guests, run the [GitHub access checks](references/github-access.md) under each worker's own identity before declaring source access ready. macOS privacy, Codex app access, filesystem access, SSH, queue authorization and signing are different layers.
 4. **Nova agent roles:** [references/agent-setup.md](references/agent-setup.md). Map developers, Coordinator and Dispatcher, enroll unique workers, and retain claim-compatible completion without Coordinator retesting.
 5. **Acceptance and cutover:** [references/verification.md](references/verification.md). Demonstrate requested capabilities through the real worker session, including fresh browser/UI input and cleanup. Keep missing capabilities pending.
@@ -33,7 +33,7 @@ Determine roles, VM count, workload, available memory, chosen storage and migrat
 
 Preserve original approvals, denials and unknown operation outcomes during migration. Reuse authorization valid for the present machine/actor/scope; do not invent new approval stages. A historical consent receipt or copied settings file is not a grant on a new guest. Never answer security dialogs synthetically, edit TCC databases, disable signature checks or add blanket Full Disk Access as a shortcut.
 
-Clone a base image before enrolling guest-specific accounts, signing keys, SSH identities and queue workers. Give each worker its own checkout and private profile. Host and guest foregrounds are separate resources. Existing queue policies and user stops remain authoritative; this skill does not itself claim work or create schedules, chats or releases.
+Clone a base image before enrolling accounts, signing keys, SSH identities and queue workers. Apply only the selected host-derived credentials after cloning; keep SSH host keys and queue credentials distinct. Give each worker its own checkout and private profile. Host and guest foregrounds are separate resources. Existing queue policies and user stops remain authoritative; this skill does not itself claim work or create schedules, chats or releases.
 
 ## Finish with evidence
 
