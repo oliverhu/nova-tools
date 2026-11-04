@@ -338,6 +338,8 @@ class Setup:
             self.save()
         self.report["status"] = "pending" if any(item["status"] != "complete" for item in self.report["phases"].values()) else "setup-prepared"
         self.report["all_app_permissions_verified"] = False
+        self.report["feature_tasks_ready"] = False
+        self.report["manual_steps"].append("Before feature task pickup, the setup owner must qualify the actual app/runner permission inventory, including Local Network for NovaFeatureCheck and required Codex target-app access, then report readiness to Coordinator. Keep affected work dependent on the existing onboarding task; this prepared report is not admission.")
         self.save()
         print("\nSetup report: " + str(self.record / "report.json"))
         for item in self.report["manual_steps"]:

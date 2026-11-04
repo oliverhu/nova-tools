@@ -29,12 +29,18 @@ Determine roles, VM count, workload, available memory, chosen storage and migrat
 3. **Access and signing:** [references/permissions-signing.md](references/permissions-signing.md). Use [permission onboarding](references/permission-onboarding.md) to scrutinize test requests and group only necessary first-use consent before development. Qualify the actual execution actor on each machine. For development hosts and guests, run the [GitHub access checks](references/github-access.md) under each worker's own identity before declaring source access ready. macOS privacy, Codex app access, filesystem access, SSH, queue authorization and signing are different layers.
 4. **Nova agent roles:** [references/agent-setup.md](references/agent-setup.md). Map developers, Coordinator and Dispatcher, enroll unique workers, and retain claim-compatible completion without Coordinator retesting.
 5. **Acceptance and cutover:** [references/verification.md](references/verification.md). Demonstrate requested capabilities through the real worker session, including fresh browser/UI input and cleanup. Keep missing capabilities pending.
+6. **A failure:** use [references/troubleshooting.md](references/troubleshooting.md). Prefer a cause-specific correction over repeating provisioning or widening access.
+
+Before ordinary task pickup, require the actual permission inventory and readiness
+report for the worker's planned apps/routes, including Local Network when needed.
+Dispatcher and the worker check this before feature assignment/claim. Resolve
+missing required access under the existing onboarding prerequisite; preparation
+or installed skill hashes alone do not qualify the worker.
 
 For a reusable preconfigured VM, follow [frozen images](references/frozen-images.md):
 freeze a stopped template, export a versioned archive and qualify a distinct
 import before cutover. Preserve the shared credential policy while enrolling
 machine-specific workers and checking local permissions after import.
-6. **A failure:** use [references/troubleshooting.md](references/troubleshooting.md). Prefer a cause-specific correction over repeating provisioning or widening access.
 
 Preserve original approvals, denials and unknown operation outcomes during migration. Reuse authorization valid for the present machine/actor/scope; do not invent new approval stages. A historical consent receipt or copied settings file is not a grant on a new guest. Never answer security dialogs synthetically, edit TCC databases, disable signature checks or add blanket Full Disk Access as a shortcut.
 

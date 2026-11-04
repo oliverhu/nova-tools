@@ -41,6 +41,7 @@ Do not promise zero prompts after upgrades or identity/context changes.
 | Peekaboo UI work | Selected actual host's Accessibility and Screen Recording; use status before request |
 | Synthetic pointer/background keyboard input | Event Synthesizing only when the selected actions need it |
 | Runner reads of guarded build storage | Selected stable runner families' permission-only LaunchServices preflight |
+| Local Network | Actual stable app/runner and helper responsibility, user account and normal GUI launch; verify an intended operation against an owned destination before feature work |
 | Codex Browser / Computer Use | Actual worker chat, app connection and required target-app first-use access; qualify before timed UI operations |
 | Product camera, microphone, Bluetooth/passkey, notifications or automation | Only categories exercised by the intended workload, on the actual product/test identity using supported setup; otherwise not requested |
 | Signing/keychain | Selected identity and actual execution context, only when signing is needed; keep account enrollment separate |
@@ -69,6 +70,61 @@ interactive desktop. Existing grants need no extra confirmation. There is one
 grouped completion pause for missing local grants, no per-runner Return prompts,
 and no automatic request from SSH/background test execution. The local Peekaboo
 phase does not qualify a Bridge route or Codex app access.
+
+## Local Network is a separate prerequisite
+
+The November 4 human screenshot showed **“Allow NovaFeatureCheck to find devices
+on local networks?”**. This identifies the displayed requester and Local Network
+category; it is not an Allow response or proof of the requester's PID/bundle.
+Keep the source screenshot/private receipt outside Git. Attribute the actual
+main/helper process before arranging any missing human action.
+
+Use System Settings > Privacy & Security > Local Network and the supported
+operation in the actual signed app/runner's normal launch context. Apple notes
+that macOS tracks the responsible app and has user-specific Local Network state.
+Shell/SSH connectivity can have different treatment, so it does not qualify a
+GUI app. A loopback fixture or a usage-description string alone is not proof of
+the app's Local Network access. See [Apple TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+
+For planned LAN work, qualify only an owned, reachable test destination or the
+explicitly needed service; do not scan/discover unrelated devices to provoke a
+dialog. Record the actual operation/result and the responsible stable identity.
+Readiness remains pending if attribution, the human's decision, operation result
+or cleanup is unknown. For a workflow requiring no LAN access, remove unintended
+discovery from that test path where appropriate; record why the category is not
+required instead of broadening access. A denied category is not a failed feature.
+Do not change system-wide network exceptions or reset privacy state to avoid it.
+
+## Verify before taking feature tasks
+
+Before initial worker admission, finish the permission inventory for **all
+planned apps, runner families and execution routes**, including Local Network,
+Accessibility, capture/input, protected folders/volumes, Codex target-app access
+and any planned media, Photos, Bluetooth, notification or automation operation.
+Each required row needs actual observed qualification and cleanup evidence for
+that machine/actor/context. Mark unused categories not required with a reason;
+never mark unknown, denied or not tested as passed.
+
+Coordinator records the developer's readiness report and prerequisite task IDs;
+Dispatcher checks that report **before offering a new feature assignment**.
+Developers check it before a normal `next`/claim. A skill-sync receipt, local-tool
+preflight, running app, shell network success or prepared setup report is not
+permission admission. The explicit onboarding/repair task is the permitted way
+to resolve missing setup; it must not run feature acceptance to elicit consent.
+
+Use existing queue dependencies to enforce the actual prerequisite for affected
+work. For an existing worker, preserve active claims/operations, then have the
+owner queue settled affected work behind its single onboarding task. Coordinator
+retains/adds the prerequisite on new affected submissions, and Dispatcher does
+not wake that worker for feature work while required readiness is pending.
+Do not create a separate queue identity, polling service or approval gate.
+Onboarding completion must describe actual required permission qualification;
+installation or answering one unrelated dialog cannot close it. Genuine missing
+human consent remains a precise setup item, never inferred from silence.
+
+After an app/signing/route/user/VM change or an unexpected prompt, invalidate the
+affected readiness rows and resolve them in onboarding before another affected
+assignment. Keep valid grants and unrelated evidence; do not repeat whole setup.
 
 Prepare/sign the selected runners under existing storage guards, then use their
 supported permission-only LaunchServices preflight. The runner performs no

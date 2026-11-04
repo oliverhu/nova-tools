@@ -58,6 +58,13 @@
       },
       "capability_evidence": [],
       "permission_inventory": [],
+      "permission_admission": {
+        "feature_tasks_ready": false,
+        "readiness_receipt": null,
+        "onboarding_task_id": null,
+        "required_contexts": [],
+        "pending_required_categories": []
+      },
       "rollback_location": null,
       "pending_human_actions": [],
       "cutover_complete": false
@@ -78,6 +85,10 @@
     "launch_context": null,
     "category_or_target_app": null,
     "required_operation": null,
+    "required_for_workload": null,
+    "not_required_reason": null,
+    "responsible_app_and_helpers": null,
+    "user_account": null,
     "fixture_alternative": null,
     "status": "not assessed",
     "evidence_path": null,

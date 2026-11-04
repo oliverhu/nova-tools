@@ -202,6 +202,11 @@ Each applied invocation writes a private report/log directory under
 a named step still needs attention; exit `0` means the selected setup phases
 completed, not that every app's access or any feature test is qualified. The
 report explicitly keeps `all_app_permissions_verified: false`.
+It also records `feature_tasks_ready: false`: the setup owner must separately
+qualify the actual app/runner permission inventory, including Local Network for
+NovaFeatureCheck where needed, before feature assignment or normal task pickup.
+Coordinator/Dispatcher use that report and existing onboarding-task dependencies;
+a successful local-tool preflight or shell connection does not qualify GUI access.
 
 After fixing the reported prerequisite, rerun all steps or select a phase:
 

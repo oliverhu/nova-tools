@@ -123,6 +123,15 @@ repository read, signing/provisioning parity and release capabilities distinct.
 Use existing coordination activity after onboarding or material changes; no new
 polling schedule. Missing release readiness does not block unrelated development.
 
+Permission onboarding is a prerequisite to new feature assignment and pickup:
+check the mapped worker's actual report for every planned app/runner context,
+including Local Network when required. Skill-install receipts do not establish
+permission readiness. Resolve missing access under the single existing onboarding
+task and retain it as a dependency on affected queued/new work. Preserve active
+claims and let the owner settle operations before deferral. An explicit onboarding
+assignment may perform setup; feature acceptance must not discover consent on the
+fly. See [permission onboarding](../skills/mac-vm-setup/references/permission-onboarding.md).
+
 The user explicitly assigned ongoing upkeep to Coordinator on November 3, 2026.
 The source of truth is the current user-authorized workflow in `nova-tools/main`:
 `skill/SKILL.md` installs as `nova-coordination/SKILL.md`, and the complete

@@ -80,6 +80,19 @@ missing prerequisites before starting; they do not request consent repeatedly,
 add confirmation relays, reset grants or broaden access. A partial UI tree or
 unsettled operation is not by itself evidence of a missing permission.
 
+Before new feature assignments, Coordinator and Dispatcher require the mapped
+worker's actual permission-onboarding report for all planned app/runner contexts,
+including Local Network for NovaFeatureCheck where required. Installed skill
+hashes or local tool grants alone are insufficient. Developers verify this before
+normal `next`/claim; an explicitly assigned onboarding task resolves missing setup.
+Keep affected work queued behind that existing prerequisite, preserving other
+dependencies and active claims. Unknown/denied/untested required access keeps the
+worker unavailable for those feature assignments until the setup owner qualifies
+it. Record unused categories with a reason rather than requesting blanket access.
+Recheck affected rows after context changes or unexpected prompts, through the
+same onboarding task and existing coordination activity. See the setup skill's
+permission-onboarding reference; no new claim service or polling schedule.
+
 ## Work and ownership
 
 Submit each new request once with `add --file /absolute/task.json`, using a
