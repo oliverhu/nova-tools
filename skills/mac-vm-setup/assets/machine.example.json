@@ -93,7 +93,10 @@
     "status": "not assessed",
     "evidence_path": null,
     "pending_human_action": null,
-    "last_request_outcome": null
+    "last_request_outcome": null,
+    "observed_operation_access": null,
+    "permission_ui_observed": null,
+    "human_response_observed": null
   },
   "secrets_policy": "Only paths/nonsecret identifiers; no passwords, tokens, private keys or copied consent grants"
 }

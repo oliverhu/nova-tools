@@ -89,8 +89,22 @@ the app's Local Network access. See [Apple TN3179](https://developer.apple.com/d
 For planned LAN work, qualify only an owned, reachable test destination or the
 explicitly needed service; do not scan/discover unrelated devices to provoke a
 dialog. Record the actual operation/result and the responsible stable identity.
-Readiness remains pending if attribution, the human's decision, operation result
-or cleanup is unknown. For a workflow requiring no LAN access, remove unintended
+Readiness remains pending if actual app attribution, operation result or cleanup
+is unknown, or the required operation is denied. A successful intended operation
+in the exact GUI app context with settled cleanup may qualify **observed allowed
+access** even when no prompt or human decision was observed. Record operation
+access, permission UI and human response separately; an unobserved human decision
+alone is not a new prerequisite and must not cause another consent request.
+Do not infer a saved grant, a human click or access for other programs/contexts.
+
+When the user's scope includes reuse, an operation-only repeat can use the same
+immutable signed app, executable, bundle ID, designated requirement, UUID and
+normal launch route with fresh private session data. Keep its existing bounded
+supervisor and settle its app/server operations. A prior canceled endpoint stays
+closed; a separately arranged repeat uses a newly bounded owned endpoint, not an
+extension or retry loop. This qualifies only the actual repeated operation/context.
+
+For a workflow requiring no LAN access, remove unintended
 discovery from that test path where appropriate; record why the category is not
 required instead of broadening access. A denied category is not a failed feature.
 Do not change system-wide network exceptions or reset privacy state to avoid it.
@@ -134,8 +148,10 @@ closing its ACK never constitutes consent. Reuse supported packaging of qualifie
 libraries inside the signed app so external reads do not occur unexpectedly
 before the permission bootstrap. Do not loosen signature or library validation.
 
-The human completes actual OS/app consent. Record observed allowed, denied,
-restart-required, unknown and not-requested separately; qualify only the requested
+The human completes actual OS/app consent when required. Working access does not
+need a new consent response. Record observed allowed access, denied access,
+restart-required, unknown and not-requested separately from any observed UI or
+human decision; qualify only the requested
 operation and its cleanup. Never click security dialogs synthetically, transplant
 TCC grants, grant Full Disk Access as a shortcut, or access unrelated private data.
 

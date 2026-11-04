@@ -50,6 +50,10 @@ Clone a base image before enrolling accounts, signing keys, SSH identities and q
 
 Report machine/VM identities and paths, exact tested toolchain/runtime versions, storage checks, capability results, remaining human actions and rollback location. Separate `installed`, `connected`, `permission verified`, `functional check passed` and `cutover complete`. A heartbeat or successful shell command cannot establish the whole VM's readiness.
 
+Record observed operation access separately from permission UI and human response.
+An actual successful scoped GUI operation with settled cleanup does not require
+a fresh Allow response; do not infer a stored grant or broader program access.
+
 For provenance and evidence limits, read [references/learning-sources.md](references/learning-sources.md). The procedures are self-contained; old machine records are optional audit material, not dependencies.
 
 ## Portability

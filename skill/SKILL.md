@@ -93,6 +93,14 @@ Recheck affected rows after context changes or unexpected prompts, through the
 same onboarding task and existing coordination activity. See the setup skill's
 permission-onboarding reference; no new claim service or polling schedule.
 
+An intended operation that actually succeeds for the exact GUI app context with
+settled cleanup can qualify observed allowed access even if no prompt or human
+decision was observed. Record these facts separately; do not require another
+Allow response merely to reuse working access. A user-authorized operation-only
+repeat keeps the same immutable app/identity/route and fresh private session data.
+It qualifies that operation/context, not a stored grant or blanket family access.
+Actual denials and unresolved operations remain binding.
+
 ## Work and ownership
 
 Submit each new request once with `add --file /absolute/task.json`, using a
