@@ -335,6 +335,20 @@ For a misclassified artifact-location wait, only an administrator may use
 A recorded `human_stop: true` cannot be cleared this way. Original receipts,
 acceptance and attempt/reassignment counts are preserved; no active task is moved.
 
+For an administrative correction of a nonhuman setup/dependency wait, use the
+same endpoint with `wait_correction.category: "setup_dependency"`, explicit
+`approval_not_required: true`, a reason identifying the verified classification,
+and a nonempty `dependencies` list of existing prerequisite task IDs. Verify the
+actual stopped owner receipt and scope first; an assistant's assertion alone is
+not consent. Current generation, `execution_stopped`, `external_state_checked`
+and descriptive evidence are required. The recorded execution must also be
+stopped. Any recorded `human_stop: true` or `approval_request` field in the current
+result or receipt history refuses this path, including legacy request formats.
+Use the existing genuine-approval workflow for those tasks. Dependencies remain
+cycle-checked and gate pickup. This correction preserves original receipts,
+results, last owner, generation and attempt counts and audits the reason and
+prerequisites; it does not grant access, clear an OS denial or qualify a test.
+
 ## Durable approval responses
 
 `nova-coord approve --receipt approval.json` applies one verified human response

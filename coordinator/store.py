@@ -205,7 +205,7 @@ class Store:
             ' For external approval waits, finish with outcome pending_external_approval; never retry or resubmit approval requests automatically. '
             'Record approval_request with thread_id and question_id in pending receipts. On the actual human response, immediately run approve --receipt with its source message and every explicitly covered pending task/generation, even while another claim is active. Read back queued eligibility before saying resumed; approval is not test qualification. '
             'After a verified human approval response, the last owning worker may explicitly retry with approval_received=true, approval_evidence naming the response, and settled execution/external-state evidence. '
-            'Artifact-location waits are scheduling waits; an administrator may correct a mistaken approval classification through defer with an audited wait_correction. '
+            'Artifact-location and verified nonhuman setup/dependency waits are scheduling waits; an administrator may correct a mistaken approval classification through defer with the supported audited wait_correction. Setup corrections require existing prerequisites and refuse any recorded human stop or approval request. '
             f'Settled blocked tasks retry after 15 minutes on the current host until {FIX_ATTEMPT_LIMIT} fix attempts are used, then automatically reassign to another eligible host. '
             'An actual claim by a different host resets fix_attempts_used to zero and consumes one of at most 6 lifetime host reassignments. '
             'Same-host retries do not reset the count; the initial assignment is not a reassignment. '
@@ -462,12 +462,26 @@ class Store:
             if correcting_approval:
                 if actor != 'admin':
                     raise Conflict('Only administrators may correct an approval classification')
-                if (not isinstance(correction,dict) or correction.get('category') != 'artifact_access'
+                if (not isinstance(correction,dict) or correction.get('category') not in ('artifact_access', 'setup_dependency')
                         or correction.get('approval_not_required') is not True):
-                    raise Invalid('Explicit artifact-access classification and approval_not_required evidence are required')
+                    raise Invalid('Explicit supported wait classification and approval_not_required evidence are required')
                 bounded(correction.get('reason'), 'wait_correction.reason', 12000)
                 if json.loads(row['result']).get('human_stop') is True:
-                    raise Conflict('A recorded human stop cannot be reclassified as an artifact wait')
+                    raise Conflict('A recorded human stop cannot be reclassified as a scheduling wait')
+                if correction['category'] == 'setup_dependency':
+                    # This is an explicit administrative classification repair,
+                    # never evidence that consent was received. Preserve bound
+                    # questions and legacy requests anywhere in receipt history.
+                    prior = [json.loads(row['result'])]
+                    prior.extend(json.loads(r['receipt']).get('receipt', {}) for r in db.execute(
+                        'SELECT receipt FROM receipts WHERE task_id=?', (ident,)))
+                    if any(not isinstance(receipt, dict) or receipt.get('human_stop') is True
+                           or 'approval_request' in receipt for receipt in prior):
+                        raise Conflict('Recorded human stops or approval requests require their original approval workflow')
+                    if json.loads(row['result']).get('execution_stopped') is not True:
+                        raise Conflict('The recorded execution has not settled')
+                    if not isinstance(body.get('dependencies'), list) or not body['dependencies']:
+                        raise Invalid('Setup wait correction requires explicit existing prerequisite task IDs')
             elif correction is not None:
                 raise Conflict('Wait correction applies only to a pending external approval')
             if not row or (not correcting_approval and row['status'] not in ('queued', 'running', 'blocked', 'failed')):
@@ -513,6 +527,7 @@ class Store:
             if correcting_approval:
                 self.event(db, actor, 'approval-classification-corrected', ident, encoded({
                     'previous_status':'pending_external_approval','status':'queued','wait_correction':correction,
+                    'generation':row['generation'],'dependencies':deps,
                     'worker':req.get('worker'),'evidence':evidence}))
             task = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
             return {**self.public_task(task), **self.scheduling(db,task)}

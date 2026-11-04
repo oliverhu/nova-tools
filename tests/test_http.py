@@ -193,6 +193,32 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(200,code);self.assertEqual('queued',json.loads(raw)['status'])
         self.assertEqual('oliver-mini',json.loads(raw)['next_worker'])
 
+    def test_setup_wait_correction_http_preserves_human_request_and_requires_admin(self):
+        self.request('/api/worker/pulse','oliver-mini',{'capacity':{'cpus':8}})
+        _,raw,_=self.request('/api/tasks','admin',{'request_key':'setup-prerequisite','title':'Setup prerequisite'})
+        dep=json.loads(raw)['id']
+        for suffix,receipt in (('nonhuman',{}),('human',{'approval_request':{'thread_id':'human','question_id':'question'}})):
+            _,raw,_=self.request('/api/tasks','admin',{'request_key':'setup-wait-'+suffix,'title':suffix})
+            ident=json.loads(raw)['id']
+            _,raw,_=self.request('/api/worker/claim','oliver-mini',{'task_id':ident})
+            claim=json.loads(raw)
+            identity={'generation':claim['task']['generation'],'claim_token':claim['claim_token'],'step':0}
+            self.request('/api/tasks/'+ident+'/finish','oliver-mini',{**identity,'outcome':'pending_external_approval',
+                'receipt':{'summary':'Stopped setup wait','execution_stopped':True,**receipt}})
+            body={'generation':identity['generation'],'execution_stopped':True,'external_state_checked':True,
+                'evidence':'Owner verified this is a stopped setup wait, not a new human decision','dependencies':[dep],
+                'wait_correction':{'category':'setup_dependency','approval_not_required':True,'reason':'Verified exact owner receipt and setup prerequisite'}}
+            url='/api/tasks/'+ident+'/defer'
+            self.assertEqual(403,self.request(url,body=body)[0])
+            self.assertEqual(409,self.request(url,'oliver-mini',body)[0])
+            code,raw,_=self.request(url,'admin',body)
+            if suffix=='human':
+                self.assertEqual(409,code)
+            else:
+                self.assertEqual(200,code)
+                result=json.loads(raw);self.assertEqual('queued',result['status'])
+                self.assertFalse(result['ready']);self.assertEqual([dep],result['dependencies'])
+
     def test_manual_release_requires_admin_and_repository(self):
         for actor in (None,'oliver-mini'):
             self.assertEqual(403,self.request('/api/releases/start',actor,{'repository':'oliverhu/nova-browser'})[0])

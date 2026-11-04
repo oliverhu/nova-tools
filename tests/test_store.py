@@ -290,6 +290,87 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(Conflict):self.store.defer('admin',task['id'],body)
         self.assertEqual('pending_external_approval',self.store.detail(task['id'])['status'])
 
+    def setup_wait(self, key='task', **receipt):
+        task=self.add(key);claim=self.store.claim('oliver-mini',task['id'])
+        self.finish(claim,'pending_external_approval',fix_attempts_used=3,branch='preserved-checkpoint',**receipt)
+        dep=self.add(key+'-setup-prerequisite',requirements={'worker':'oliver-mini'})
+        body=self.wait_body(claim,dependencies=[dep['id']],wait_correction={
+            'category':'setup_dependency','approval_not_required':True,
+            'reason':'Owner stopped all operations and verified no human question exists; setup task owns the missing readiness'})
+        return task,claim,dep,body
+
+    def test_admin_corrects_nonhuman_setup_wait_preserving_evidence_and_budgets(self):
+        task,old,dep,body=self.setup_wait()
+        before=self.store.detail(task['id'])
+        result=self.store.defer('admin',task['id'],body)
+        after=self.store.detail(task['id'])
+        self.assertEqual('queued',result['status']);self.assertFalse(result['ready'])
+        self.assertEqual([dep['id']],result['dependencies'])
+        for field in ('receipts','result','last_owner','generation','fix_attempts_used','total_fix_attempts','reassignment_count','attempts_host'):
+            self.assertEqual(before[field],after[field],field)
+        event=after['events'][-1];self.assertEqual('approval-classification-corrected',event['kind'])
+        detail=json.loads(event['detail']);self.assertEqual([dep['id']],detail['dependencies'])
+        self.assertEqual(1,detail['generation']);self.assertNotIn('approval_received',detail)
+        self.assertIsNone(self.store.claim('oliver-mini',task['id'])['task'])
+        self.finish(self.store.claim('oliver-mini',dep['id']))
+        new=self.store.claim('oliver-mini',task['id'])
+        self.assertIsNotNone(new['task']);self.assertEqual(3,new['task']['fix_attempts_used'])
+        with self.assertRaises(Conflict):self.finish(old)
+
+    def test_setup_correction_requires_admin_exact_generation_and_both_settlement_flags(self):
+        task,old,dep,body=self.setup_wait()
+        before=self.store.detail(task['id'])
+        for actor,change,error in (
+            ('oliver-mini',{},Conflict),('admin',{'generation':0},Conflict),
+            ('admin',{'execution_stopped':False},Invalid),('admin',{'external_state_checked':False},Invalid),
+            ('admin',{'wait_correction':{**body['wait_correction'],'approval_not_required':False}},Invalid),
+            ('admin',{'wait_correction':{**body['wait_correction'],'reason':''}},Invalid)):
+            with self.subTest(actor=actor,change=change),self.assertRaises(error):
+                self.store.defer(actor,task['id'],{**body,**change})
+            self.assertEqual(before,self.store.detail(task['id']))
+
+    def test_setup_correction_requires_valid_nonempty_acyclic_prerequisites(self):
+        task,old,dep,body=self.setup_wait()
+        cycle=self.add('cycle',dependencies=[task['id']])
+        before=self.store.detail(task['id'])
+        for deps in (None,[],['unknown-id'],[task['id']],[cycle['id']],[123]):
+            with self.subTest(deps=deps),self.assertRaises(Invalid):
+                self.store.defer('admin',task['id'],{**body,'dependencies':deps,'worker':'oliver-mini'})
+            self.assertEqual(before,self.store.detail(task['id']))
+
+    def test_setup_correction_preserves_current_real_and_legacy_human_requests(self):
+        for index,receipt in enumerate(({'human_stop':True},{'approval_request':{'thread_id':'human','question_id':'bound'}},
+                        {'approval_request':'legacy-request'},{'approval_request':None})):
+            with self.subTest(receipt=receipt):
+                task,old,dep,body=self.setup_wait(key='human-wait-'+str(index),**receipt)
+                before=self.store.detail(task['id'])
+                with self.assertRaises(Conflict):self.store.defer('admin',task['id'],body)
+                self.assertEqual(before,self.store.detail(task['id']))
+
+    def test_setup_correction_cannot_erase_human_request_in_prior_generation(self):
+        task=self.add();old=self.store.claim('oliver-mini',task['id'])
+        self.finish(old,'blocked',approval_request='historical-bound-request')
+        self.store.defer('oliver-mini',task['id'],self.wait_body(old,worker='oliver-mini'))
+        current=self.store.claim('oliver-mini',task['id']);self.finish(current,'pending_external_approval')
+        dep=self.add('setup')
+        body=self.wait_body(current,dependencies=[dep['id']],wait_correction={
+            'category':'setup_dependency','approval_not_required':True,'reason':'Only current receipt appears unbound'})
+        before=self.store.detail(task['id'])
+        with self.assertRaises(Conflict):self.store.defer('admin',task['id'],body)
+        self.assertEqual(before,self.store.detail(task['id']))
+
+    def test_setup_correction_rejects_active_work_and_unsettled_recorded_execution(self):
+        task=self.add();old=self.store.claim('oliver-mini',task['id']);dep=self.add('setup')
+        body=self.wait_body(old,dependencies=[dep['id']],wait_correction={
+            'category':'setup_dependency','approval_not_required':True,'reason':'Setup prerequisite'})
+        with self.assertRaises(Conflict):self.store.defer('admin',task['id'],body)
+        self.finish(old,'pending_external_approval')
+        # Simulate a legacy imported row; current finish rejects this state.
+        with self.store.transaction() as db:
+            db.execute('UPDATE tasks SET result=? WHERE id=?',
+                       (json.dumps({'execution_stopped':False}),task['id']))
+        with self.assertRaises(Conflict):self.store.defer('admin',task['id'],body)
+
     def test_classify_external_approval_preserves_history_and_fences_claims(self):
         task=self.add();old=self.store.claim('oliver-mac')
         body=self.wait_body(old,action='pending_external_approval')
