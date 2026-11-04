@@ -1,5 +1,9 @@
 {
   "schema": 1,
+  "permissions": {
+    "peekaboo": ["accessibility", "screen-recording"],
+    "runner_families": ["browser-features"]
+  },
   "browser_path": "~/Documents/ChatGPT/browser",
   "storage": {
     "volume": "/Volumes/NovaBuild",

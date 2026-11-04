@@ -10,6 +10,7 @@ Maintain a private capability ledger for each host/guest. Record `passed`, `pend
 | Toolchain | Correct Xcode/SDK selection; small compile executes from guarded output |
 | Simulator if requested | Semantic boot/migration, SpringBoard, app launch/termination, owned-device shutdown |
 | UI automation | Real capture and scoped input/readback in owned fixture through actual worker/runner |
+| Permission readiness | Workload-specific request inventory reviewed; required actor/category grants and Codex target-app access qualified during onboarding; unused categories recorded as not requested |
 | Codex Browser | Discovery, form input/click, fresh rendered nonce, capture and tab cleanup in guest chat |
 | Signing if requested | Actual authorized key use; correct signature/profile/entitlements for intended artifact |
 | Queue if requested | Correct host/chat/project mapping, heartbeat, self-claimed bounded diagnostic and settled receipt |

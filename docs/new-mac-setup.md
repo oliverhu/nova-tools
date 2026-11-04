@@ -7,14 +7,16 @@ validate and report directly to Coordinator; Dispatcher handles eligible idle wa
 `scripts/setup-new-mac.py` prepares an Apple Silicon development Mac. It installs
 the toolchain dependencies, obtains the browser source, configures the selected
 APFS build storage, fetches and validates Nova provisioning files, installs the
-coordinator client, requests Peekaboo permissions and prepares the five stable
-Nova permission runners. It never starts a feature test, publishes a release or
+coordinator client, checks selected Peekaboo permissions and prepares selected
+stable Nova permission runners. It never starts a feature test, publishes a release or
 uploads to Apple.
 
 **Implementation status:** authored and statically reviewed; not executed or
 tested on a new Mac. The request was to prepare the script without testing it now.
 The optional credential-sync phase has separate isolated tests with temporary
 homes/stores and synthetic files; those do not qualify the complete new-Mac setup.
+Permission selection/prompt suppression also has isolated mocked tests; no live
+OS consent or complete new-machine setup is claimed by those tests.
 
 ## Before running
 
@@ -114,11 +116,29 @@ global trust outside that existing flow.
 
 ## Permissions and signing completion
 
-The script requests local Peekaboo Accessibility, Screen Recording and Event
-Synthesizing access, opens the appropriate System Settings pane, then reads the
-actual permission state. You approve the macOS prompts. There are no synthetic
-clicks on permission dialogs, TCC database edits, resets or Full Disk Access
-shortcuts. A denied or restart-required permission remains pending.
+Review [the permission onboarding checklist](../skills/mac-vm-setup/references/permission-onboarding.md)
+before development. The optional `permissions` configuration selects exactly
+which local Peekaboo categories and registered runner families this workload needs:
+
+```json
+"permissions": {
+  "peekaboo": ["accessibility", "screen-recording"],
+  "runner_families": ["browser-features"]
+}
+```
+
+These are also the defaults for older setup configurations. Add
+`event-synthesizing` only for actions needing synthetic pointer/background
+keyboard input, and specialized runner families only for planned suites. Empty
+lists skip those capabilities for a headless worker. The dry-run plan displays
+the selected setup before any changes.
+
+The script checks actual local permission state, requests only missing selected
+grants during the interactive onboarding session, and uses one grouped completion
+pause. Already-granted access adds no confirmation. Missing/unknown access from
+SSH or background execution is reported without launching requests. You complete
+the genuine macOS prompts; a denial or restart requirement remains pending.
+No synthetic security-dialog clicks, TCC edits/resets or Full Disk Access shortcut.
 
 ## Optional named-credential sync
 
@@ -141,16 +161,23 @@ credentials, enable Remote Login, or start any background service. Peer enrollme
 requires a second explicit local command on the receiving machine. Setup completion
 means locally prepared, not verified SSH access or a successful credential transfer.
 
-All five existing Nova runner families are built and signed through the browser's
+Selected existing Nova runner families are built and signed through the browser's
 guarded SSD setup helper, then launched only for their permission-only removable
 volume preflight. A failure stops that runner sequence without retrying input.
 Those small setup binaries are not feature tests and grant no broader task access.
+The default is the existing `browser-features` family, not five new setup prompts.
+There is no per-runner “press Return” step. Runner storage preflight does not
+depend on unrelated Peekaboo consent. Stable families/signing requirements are
+reused across new tasks; per-task nonces remain private metadata.
 
 Install/open Codex and sign in separately. Approve its own first-use app-access
 requests inside Codex; permissions granted to Terminal or Peekaboo do not transfer
 to Codex, another app, an SSH session or a Bridge host. Product camera/microphone,
-Bluetooth/passkey and other per-app capabilities still request their own consent
-when actually used. Notarization credentials remain in the existing Keychain
+Bluetooth/passkey and other required per-app capabilities belong in that worker's
+planned onboarding session through their supported setup. Unused categories stay
+not requested; newly required categories are setup prerequisites before timed
+tests. Routine tests check readiness rather than opening consent on the fly.
+Notarization credentials remain in the existing Keychain
 workflow; this script does not copy an entire Keychain or store Apple passwords.
 
 Profiles are checked again after transfer against the bundle hash and manifest,
@@ -187,6 +214,11 @@ Selected phases automatically include their prerequisites. The script rechecks
 external state, retains identical existing files and never uses an old receipt
 as proof of permission. After an interrupted runner, inspect its existing setup
 receipt/cleanup before resuming. It does not blindly repeat failed commands.
+
+For a portable preconfigured VM, follow [frozen Tart images](../skills/mac-vm-setup/references/frozen-images.md).
+The whole guest disk preserves its normal permission state, but destination
+actor/context checks still apply; host grants and Codex app-access authorization
+are separate. Do not copy or edit TCC databases to manufacture portability.
 
 ## References
 

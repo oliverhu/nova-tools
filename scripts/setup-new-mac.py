@@ -26,7 +26,7 @@ PHASES = ("tools", "repositories", "storage", "profiles", "signing", "coordinato
 DEPENDENCIES = {"repositories": ("tools",), "storage": ("repositories",),
                 "profiles": ("repositories",), "signing": ("profiles",),
                 "coordinator": ("storage",), "permissions": ("tools",),
-                "runners": ("storage", "signing", "permissions")}
+                "runners": ("storage", "signing")}
 FORMULAS = ("git", "git-lfs", "gh", "python@3.12", "node", "cmake", "ninja", "jq", "ripgrep", "ffmpeg", "openclaw/tap/peekaboo")
 RUNNERS = ("browser-features", "community-ui", "amazon-playback", "mini-player", "password-focus")
 XCODE = Path("/Applications/Xcode.app/Contents/Developer")
@@ -34,6 +34,26 @@ REPOSITORY = "git@github.com:oliverhu/nova-browser.git"
 PERMISSIONS = {"accessibility": ("Accessibility", "Privacy_Accessibility"),
                "screen-recording": ("Screen Recording", "Privacy_ScreenCapture"),
                "event-synthesizing": ("Event Synthesizing", "Privacy_Accessibility")}
+
+
+def permission_plan(config):
+    """Workload selection only; never inspect or request live consent here."""
+    value = config.get("permissions", {"peekaboo": ["accessibility", "screen-recording"],
+                                       "runner_families": ["browser-features"]})
+    if not isinstance(value, dict) or set(value) != {"peekaboo", "runner_families"}:
+        raise ValueError("permissions needs peekaboo and runner_families lists")
+    for name, choices in (("peekaboo", PERMISSIONS), ("runner_families", RUNNERS)):
+        items = value[name]
+        if (not isinstance(items, list) or any(not isinstance(x, str) or x not in choices for x in items)
+                or len(items) != len(set(items))):
+            raise ValueError("Unknown or repeated permissions selection: " + name)
+    return {name: list(items) for name, items in value.items()}
+
+
+def require_interactive_desktop():
+    if (os.stat("/dev/console").st_uid != os.getuid() or os.environ.get("SSH_CONNECTION")
+            or os.environ.get("SSH_TTY") or not sys.stdin.isatty()):
+        raise SetupRequired("Complete the planned consent session in this Mac's logged-in desktop Terminal; no prompts from SSH/background tests")
 
 
 class SetupRequired(RuntimeError):
@@ -241,38 +261,55 @@ class Setup:
         self.report["coordinator"] = "Installed; capacity reporter/dashboard agents are deliberately not started by onboarding"
 
     def permissions(self):
-        if os.stat("/dev/console").st_uid != os.getuid():
-            raise SetupRequired("Run permission setup from Terminal in this Mac's logged-in desktop, not an SSH/background session")
+        selected = permission_plan(self.config)["peekaboo"]
+        self.report["permission_selection"] = permission_plan(self.config)
+        self.report["manual_steps"].append("During onboarding, open Codex in the actual worker chat and qualify its required Browser/Computer Use target-app access before timed tests. Reuse valid caller/app-context evidence; Terminal/Peekaboo grants do not transfer.")
+        if not selected:
+            self.report["peekaboo_permissions"] = {"status": "not requested"}
+            return
         def granted():
             result = self.command(["peekaboo", "permissions", "status", "--no-remote", "--json"], capture=True, allow_failure=True)
             value = json.loads(result.stdout)
             entries = value.get("data", {}).get("permissions")
-            if not isinstance(entries, list):
+            if result.returncode or not isinstance(entries, list):
                 raise SetupRequired("Installed Peekaboo permission schema changed; inspect its help before proceeding")
-            return {item.get("name"): item.get("isGranted") is True for item in entries}
+            states = {item.get("name"): item.get("isGranted") for item in entries if isinstance(item, dict)}
+            if any(type(states.get(PERMISSIONS[kind][0])) is not bool for kind in selected):
+                raise SetupRequired("Selected permission status is unknown; inspect the requester before prompting")
+            return states
         before = granted()
-        for kind, (name, pane) in PERMISSIONS.items():
-            if before.get(name):
-                continue
+        missing = [kind for kind in selected if not before[PERMISSIONS[kind][0]]]
+        self.report["peekaboo_permissions"] = before
+        self.report["missing_selected_permissions"] = missing
+        self.report["permission_requests"] = []
+        if not missing:
+            return
+        require_interactive_desktop()
+        print("Onboarding consent needed for the selected local Peekaboo actor: " +
+              ", ".join(PERMISSIONS[kind][0] for kind in missing), flush=True)
+        for kind in missing:
+            self.report["permission_requests"].append(kind)
             self.command(["peekaboo", "permissions", "request", kind, "--no-remote"], interactive=True, allow_failure=True)
-            self.command(["/usr/bin/open", "x-apple.systempreferences:com.apple.preference.security?" + pane], allow_failure=True)
-            acknowledge("Approve " + name + " for the exact requesting app/binary shown by macOS. A restart may be required.")
+        acknowledge("Complete only those listed grants for the exact requesting app/binary using its supported System Settings instructions. Relaunch if required; a denial remains pending.")
         after = granted()
         self.report["peekaboo_permissions"] = after
-        self.report["manual_steps"].append("Open Codex, sign in, and approve its own requested app access. Terminal/Peekaboo grants do not transfer to Codex, SSH or a Bridge host.")
-        missing = [name for name, _ in PERMISSIONS.values() if not after.get(name)]
+        missing = [PERMISSIONS[kind][0] for kind in selected if not after[PERMISSIONS[kind][0]]]
         if missing:
             raise SetupRequired("Permissions still missing: " + ", ".join(missing) + ". Relaunch the requesting app if macOS requires it; no automatic retries.")
 
     def runners(self):
-        if os.stat("/dev/console").st_uid != os.getuid():
-            raise SetupRequired("Runner permission setup needs the logged-in desktop")
+        selected = permission_plan(self.config)["runner_families"]
+        if not selected:
+            self.report["runner_permissions"] = []
+            return
+        require_interactive_desktop()
         script = self.browser / "scripts/ui_test_runner_setup.py"
-        for role in RUNNERS:
-            acknowledge("Next: the signed " + role + " permission-only runner. Allow its removable-volume read when macOS asks.")
+        print("Onboarding permission-only setup for: " + ", ".join(selected) +
+              ". Existing grants are reused; complete only genuine macOS prompts for these signed runners.", flush=True)
+        for role in selected:
             self.command([sys.executable, script, "prepare", "--runner", role], cwd=self.browser)
             self.command([sys.executable, script, "preflight", "--runner", role, "--launch-services", "--timeout-seconds", "75"], cwd=self.browser)
-        self.report["runner_permissions"] = list(RUNNERS)
+        self.report["runner_permissions"] = selected
 
     def credential_sync(self):
         config = self.config.get("credential_sync")
@@ -317,7 +354,7 @@ def main():
     config = json.loads(args.config.expanduser().read_text())
     required = {"schema", "browser_path", "storage", "provisioning", "coordinator"}
     if (not isinstance(config, dict) or config.get("schema") != 1
-            or set(config) not in (required, required | {"credential_sync"})):
+            or not required <= set(config) or set(config) - required - {"credential_sync", "permissions"}):
         parser.error("Use setup/new-mac.example.json; credentials never belong in this file")
     fields = {"storage": {"volume", "volume_uuid", "artifact_root"},
               "provisioning": {"ssh_host", "bundle_path", "sha256"},
@@ -341,6 +378,10 @@ def main():
             credential_sync_setup.validate(config["credential_sync"])
         except (ValueError, OSError):
             parser.error("Invalid credential_sync configuration; verify paths, peer identity and fingerprint")
+    try:
+        selected_permissions = permission_plan(config)
+    except ValueError as error:
+        parser.error(str(error))
     phases = set(args.phase or PHASES)
     while True:
         expanded = phases | {dependency for phase in phases for dependency in DEPENDENCIES.get(phase, ())}
@@ -350,7 +391,9 @@ def main():
     phases = [phase for phase in PHASES if phase in phases]
     if not args.apply:
         print(json.dumps({"mode": "plan", "phases": phases, "formulas": FORMULAS,
-                          "browser": config["browser_path"], "runner_families": RUNNERS,
+                          "browser": config["browser_path"], "runner_families": selected_permissions["runner_families"] if "runners" in phases else [],
+                          "permission_setup": {"peekaboo": selected_permissions["peekaboo"] if "permissions" in phases else [],
+                                               "runner_families": selected_permissions["runner_families"] if "runners" in phases else []},
                           "changes_performed": False,
                           "credential_sync": {"enabled": config.get("credential_sync", {}).get("enabled", False),
                                               "peer_enrollment": "explicit local review on peer", "automatic_transfer": False},

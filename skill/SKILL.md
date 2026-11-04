@@ -69,6 +69,17 @@ to the assigned task; installed assets alone do not establish account access,
 signing use, notarization or release readiness. Repair only the differing
 component and reuse current evidence rather than repeating product validation.
 
+The user also asked on 2026-11-04 to minimize test/app permission prompts and
+move predictable consent into onboarding. Developers scrutinize each request:
+name the actual actor, category and required operation; use isolated fixtures
+when equivalent; reuse the approved runner family and valid existing grants.
+Coordinator consolidates genuinely missing setup into the per-machine onboarding
+checklist and records the human's actual result. Use the portable setup skill's
+`references/permission-onboarding.md`. Routine tests inspect readiness and report
+missing prerequisites before starting; they do not request consent repeatedly,
+add confirmation relays, reset grants or broaden access. A partial UI tree or
+unsettled operation is not by itself evidence of a missing permission.
+
 ## Work and ownership
 
 Submit each new request once with `add --file /absolute/task.json`, using a

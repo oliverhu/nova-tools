@@ -1,5 +1,9 @@
 # Permissions, app access and signing
 
+Before a test runner requests access, use [permission onboarding](permission-onboarding.md)
+to establish its need, reuse the stable actor and arrange missing consent during
+setup. Routine development checks observe readiness; they do not reopen consent.
+
 ## Qualify the executing identity
 
 Maintain a matrix per machine with actor path/bundle ID/signature, launch context, capability, observed status, test and pending human action. A green toggle in another account/app/VM is not proof for this actor.

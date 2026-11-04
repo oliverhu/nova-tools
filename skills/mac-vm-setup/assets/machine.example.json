@@ -57,6 +57,7 @@
         "codex_project_path": null
       },
       "capability_evidence": [],
+      "permission_inventory": [],
       "rollback_location": null,
       "pending_human_actions": [],
       "cutover_complete": false
@@ -70,6 +71,18 @@
     "tested_at": null,
     "evidence_path": null,
     "cleanup_verified": false
+  },
+  "permission_record_example": {
+    "actor_path_or_bundle_id": null,
+    "signing_requirement": null,
+    "launch_context": null,
+    "category_or_target_app": null,
+    "required_operation": null,
+    "fixture_alternative": null,
+    "status": "not assessed",
+    "evidence_path": null,
+    "pending_human_action": null,
+    "last_request_outcome": null
   },
   "secrets_policy": "Only paths/nonsecret identifiers; no passwords, tokens, private keys or copied consent grants"
 }
