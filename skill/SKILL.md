@@ -1,24 +1,47 @@
 ---
 name: nova-coordination
-description: Submit, claim, execute and report Nova engineering tasks through the private Kubernetes queue on oliver-mac or oliver-mini.
+description: Coordinate, dispatch, implement and report Nova engineering work through the private queue using the Studio host and VM developers, with direct worker reports and Coordinator completion recording.
 ---
 
 # Nova task queue
 
-The user selected this workflow on 2026-10-30. Both Macs are equal pull workers.
-Use `~/.local/bin/nova-coord`; never display its private client configuration,
-credentials or claim-token files. The central service at
-https://192.168.2.13:31866 owns the queue. No peer task messages or coordinator
-approval stages are required. Preserve genuine user stops and acceptance criteria.
+The current human-approved workflow (2026-11-03) uses three developer workers:
+Studio (`oliverhu-mac-studio`), VM1 (`oliverhu-mac-studio-vm1`) and VM2
+(`oliverhu-mac-studio-vm2`). Legacy Mac/Mini identities retain history and stay
+retired unless explicitly restored. Use `~/.local/bin/nova-coord`; never display
+private client configuration, credentials or claim tokens. The central service
+is authoritative for task ownership and eligibility.
+
+## Current agent roles
+
+- **Nova — Delivery Coordinator:** intake, priorities, task submission/IDs,
+  assignment, human decisions, status and recording developer-reported completion.
+  Performs **no additional source, runtime, UI or release validation**.
+- **Nova — Queue Dispatcher:** the existing 15-minute readiness/availability check;
+  wakes an eligible idle mapped developer for an exact task. Does not claim for
+  workers or duplicate Coordinator assignments.
+- **VM1/VM2 and Studio developers:** own implementation, actual tests/acceptance,
+  source audit, main integration and settled cleanup in isolated task checkouts.
+  Send completion reports directly to Coordinator.
+- **Publisher:** an eligible developer executing a separate release claim, owning
+  actual delivery validation and reporting. Ordinary feature tasks never publish.
+
+Coordinator and Dispatcher are chat roles, not extra worker identities. Discover
+current host/chat/project bindings from the private route map; no hardcoded chat
+IDs or copied credentials. Use the existing human-authorized Nova-to-Nova routing
+for scoped reports. Preserve actual approval blocks and current user instructions.
+The repository's `docs/agent-coordination.md` explains the full role and API mapping.
 
 ## Work and ownership
 
 Submit each new request once with `add --file /absolute/task.json`, using a
 stable `request_key`, title, description/acceptance criteria, and one work step.
+Return the actual service task ID to the user after submission.
 Only an actual engine rebuild uses `task_type: engine_rebuild` and heavy compute.
 App builds, UI checks, large test suites, and ordinary features are standard work.
-Engine rebuilds prefer the Mini; either Mac can take ordinary tasks that fit its
-explicit resource requirements.
+Engine rebuilds use the configured `COORD_HEAVY_WORKER` (Studio) and wait if it
+is unavailable; never fall back to guests. Standard tasks use eligible developers
+with the required capacity/capabilities. Account for guest allocations on the host.
 
 Claim with `next` or `next --task ID` and read the task and prior receipts.
 A task is atomically assigned to one worker. There are NO global publishing,
@@ -30,6 +53,12 @@ running task or infer that an offline worker's processes stopped.
 A routine worker implements, meaningfully tests, and merges its changes into
 main. Rebase/resolve conflicts and rerun affected checks if main advances;
 use normal non-force pushes. Record exact branch/commit/merge and evidence.
+Send Coordinator the task ID/generation, outcome, landed commit, actual results,
+receipt path, limitations and settled-execution evidence. Coordinator records it
+without retesting; never call partial acceptance complete. For service completion,
+the owning worker uses its existing claim-compatible `finish` when directed and
+returns the readback. Do not transfer tokens, impersonate a worker or fake a
+blocked state to enable administrative completion.
 **DO NOT PUBLISH as part of ordinary work.** Automatic publication uses a
 separate service-generated hourly publish task. Explicit user-authorized manual
 publication follows the manual path below without waiting for the hourly check.
@@ -109,7 +138,7 @@ human stops, all acceptance requirements, receipts and attempt history.
 When the only blocker is waiting for another worker or prerequisite, use
 `wait ID --receipt /path.json` instead of marking the task blocked. The receipt
 contains `execution_stopped: true`, `external_state_checked: true`, `evidence`,
-and `worker` (oliver-mini or oliver-mac) and/or `dependencies` (existing task IDs).
+and `worker` (an actual enrolled worker ID) and/or `dependencies` (existing task IDs).
 Stop owned operations before transferring. This clears the old claim and keeps
 the task queued. It becomes eligible automatically once every prerequisite is
 completed and the destination is available. Pull another eligible task immediately.
@@ -190,8 +219,8 @@ were increased. Diagnose shared tooling once and link all affected features.
 Every hour the service checks for a fresh observed main commit different from
 the last verified publication. The background clients observe origin/main using
 their existing Git access, without modifying checkouts. The service creates a
-single deduplicated publish task with an exact `release_target`; either Mac can
-claim it. It does not build or publish by itself, and there is no publish lock.
+single deduplicated publish task with an exact `release_target`; an eligible
+qualified developer can claim it. It does not build or publish by itself, and there is no publish lock.
 The same repository/commit is not queued twice. A later merged commit gets its
 own task at the next hourly check, even if an earlier task is still running or
 failed. Workers check actual release state and never downgrade a newer release.
@@ -211,8 +240,11 @@ Each Nova release task includes the normal macOS release plus an iOS archive,
 signing, validation and upload to **App Store Connect**, from the same pinned
 source. The user authorized upload only: no TestFlight distribution, tester/group
 assignment, automatic beta distribution, App Review submission or public iOS release.
-Check existing automatic distribution settings before uploading; do not silently
-change account-wide settings. Inspect existing uploads before a retry.
+Use `xcodebuild` with the existing signed-in Xcode account. Do not touch TestFlight
+settings, testers/groups or distribution, or add routine App Store Connect browser,
+version/build-list or Safari sign-in preflights. Preserve the pinned version/build
+and upload journal; reconcile uncertain uploads before retrying. Handle a concrete
+Apple rejection within existing attempt limits without inventing a new release.
 
 Completion requires `ios_upload` in the release receipt: `status: "uploaded"`,
 `source_commit` matching the pinned release, `version`, `build_number`, `upload_ref`
@@ -229,16 +261,13 @@ change. Do not require another confirmation or wait for the hourly scheduler.
 Keep the hourly flow unchanged; ordinary implementation requests do not imply
 this exception.
 
-Record the user's instruction, exact source/artifact, destination and scope in
-one deduplicated queue task. The current API reserves publish-kind tasks for the
-hourly scheduler, so record an explicitly named manual-publication task as
-`task_type: work`, claim it normally, and supervise execution with `nova-coord run`.
-The explicit user authorization overrides its default ordinary-work no-publish
-instruction. Do not mislabel it as a service-generated task or modify another
-worker's claim. Check for active publication and inspect actual external state
-before executing or retrying; preserve all release validation and real approval
-blocks. Finish with a receipt identifying manual authorization, published scope,
-public verification and settled operations.
+For an explicit full release, use the existing authenticated administrator
+`POST /api/releases/start` with `repository`. It requires a fresh main observation
+and reuses exact-target deduplication. Report its returned task ID; the eligible
+publisher claims it normally. Do not invent an ordinary work task to bypass an
+existing blocked/unknown release. Scoped website-only requests follow their
+existing explicit authorization and artifact scope; do not widen them to an app
+release. Check actual external state before retrying and preserve real gates.
 
 For a website-only request, publish the reviewed website change while preserving
 the latest public installer, release metadata and live infrastructure. Do not
@@ -247,18 +276,16 @@ still requires its exact signed/notarized artifacts and public verification.
 
 ## Polling
 
-The user changed scheduling on 2026-11-01: only the existing **Nova coordination
-service** chat polls every 15 minutes. The independent **Nova development air**
-and **Nova development mini** idle-poll automations remain paused. A previously
-queued heartbeat must not reactivate those schedules.
+Only the existing **Nova — Queue Dispatcher** polls every 15 minutes. Legacy
+independent worker polls remain paused. Its private current mapping identifies
+Studio and VM developers; old names or queued heartbeats must not revive retired
+workers. Keep this separate from the service's hourly release timer.
 
-The coordination chat checks authoritative service readiness and worker/session
-availability, then sends a concrete task wake-up only to an eligible idle session.
-It does not claim work on a worker's behalf. Workers atomically claim through the
-service, continue their own existing claim first, and execute directly in their
-existing main session. Do not duplicate active work or add peer approval stages.
-Pending External Approval, unresolved dependencies and retry cooldowns are not
-reasons to wake a worker.
+Dispatcher checks authoritative readiness and actual chat availability, then
+wakes an eligible idle developer for a concrete task without duplicating a direct
+Coordinator assignment. Workers self-claim and continue their existing claims
+first. Pending approvals, unresolved dependencies and retry cooldowns are not
+wake-up reasons. No extra Coordinator validation or peer approval stages.
 
 After completion OR any stopped/blocked execution settles, immediately check
 `next` once in the same run. Continue eligible tasks until none remain, then stop
@@ -267,14 +294,16 @@ worker or per-task schedules. Keep the lightweight capacity/repository reporters
 running; these do not invoke models or execute engineering tasks.
 Notify only completion, material failure, or a specific required human action.
 
-## Reference artifacts from oliver-mac
+## Legacy reference artifacts from oliver-mac
 
-On Mini, use the persistent `nova-artifacts-mac` SSH alias for recordings in the
+The historical Mini route uses the `nova-artifacts-mac` SSH alias for recordings in the
 Mac intake root `/Users/oliverhu/Documents/ChatGPT/exports/nova-task-intake`.
 It uses a dedicated local key, a verified host-key pin and fresh BatchMode
 authentication without SSH-agent or ControlMaster dependence. Its scoped
 `AddressFamily inet` setting matches the Mac's Mini source-IP restriction.
-The Mac permits only this read-only contract; do not use arbitrary shell
+Do not assume that route is enrolled on Studio or a new VM. Verify its current
+availability without restarting a retired worker. The source permits only this
+read-only contract; do not use arbitrary shell
 commands or SCP:
 
 - `ssh nova-artifacts-mac ping`: connection/service JSON.

@@ -6,7 +6,10 @@ Source for Nova engineering tools maintained outside
 - `coordinator/` and `web/`: the task queue API, CLI, local gateway and dashboard.
 - `deploy/` and `scripts/`: service deployment, packaging and client installation.
 - `tests/`: coordinator regression and dashboard checks.
-- `skill/SKILL.md`: the coordination workflow installed on both workers.
+- `skill/SKILL.md`: the coordination workflow installed on developer workers.
+- `skills/mac-vm-setup/`: portable host/VM setup skill, references, machine template
+  and read-only inventory helper.
+- `docs/agent-coordination.md`: current developer, Coordinator and Dispatcher roles.
 - `artifact-transfer/`: the restricted, read-only SSH artifact helper and setup notes.
 - `scripts/setup-new-mac.py`: new-Mac onboarding, permission requests and private
   provisioning transfer. See [the setup guide](docs/new-mac-setup.md) and
@@ -22,16 +25,41 @@ credentials, SSH keys, task databases, claims, approval journals, recordings,
 logs, validation receipts and generated payloads outside Git. Pushing this
 repository does not deploy the service or replace an installed client.
 
+## Portable machine setup skill
+
+Use [`mac-vm-setup`](skills/mac-vm-setup/SKILL.md) for a new Apple Silicon host
+and Tart guests. It includes the single-disk/APFS lessons, Xcode/SSH setup,
+actor-specific permissions and signing, current agent roles, functional checks,
+a machine template and a read-only inventory helper. It contains no credentials
+or machine-specific approval records.
+
+From this repository, install on a machine where that skill is not already present:
+
+```sh
+skill_parent="${CODEX_HOME:-$HOME/.codex}/skills"
+mkdir -p "$skill_parent"
+test ! -e "$skill_parent/mac-vm-setup" && cp -R skills/mac-vm-setup "$skill_parent/"
+```
+
+For an existing installation, compare and preserve local edits before updating
+the complete folder. Invoke `$mac-vm-setup` in a new chat. The inventory helper
+needs only Python 3 on macOS; exit zero means inventory ran, not that the machine
+is ready. The skill is an assisted procedure, not a tested unattended installer.
+The client installer/package continues to install only `skill/SKILL.md` as
+`nova-coordination`; install this additional skill explicitly from the repository.
+
 ## Nova task queue
 
-A private Kubernetes task queue for `oliver-mac` and `oliver-mini`. Both workers
-claim untaken tasks atomically, implement and test the change, and merge it into
-main. Ordinary work **does not publish**. There are no shared publishing,
-integration, main, or desktop locks.
+A private Kubernetes queue for the Studio host and its two VM developers.
+Developers self-claim, implement, meaningfully validate, audit and integrate main,
+then report directly to **Nova — Delivery Coordinator**. Coordinator records
+completion without additional validation. **Nova — Queue Dispatcher** wakes
+eligible idle workers. See [current roles and completion flow](docs/agent-coordination.md).
 
-Only engine rebuilds are heavy. They prefer Mini; application builds, UI tests,
-and ordinary features are standard work available to either qualified Mac.
-Explicit memory, disk, CPU, capability and machine requirements still apply.
+Ordinary work **does not publish**. Heavy engine compilation stays on the configured
+Studio host; standard work follows actual capacity and capability requirements.
+There are no shared publishing, integration, main or desktop locks in the queue.
+Task ownership and safe settlement still apply.
 
 ## Service and workers
 
@@ -46,15 +74,13 @@ protect mutations; internal CA verification protects HTTPS. Browser OS trust is
 separate from client trust. No public ingress or tunnel is installed. Never
 print client configurations, credentials, or claim tokens.
 
-The existing **Nova coordination service** chat checks every **15 minutes** and
-wakes an eligible idle **Nova development air** or **Nova development mini**
-session only when the service has ready work. Both independent worker polling
-automations are paused. The dispatcher never claims on a worker's behalf and
-checks current session/queue state to avoid duplicate wake-ups. Workers continue
-their own claims and immediately pull again after settled work, stopping when
-no eligible task remains. Pending approvals and dependency waits do not wake them.
-The background capacity/repository reporters stay running without invoking models.
-
+The existing **Nova — Queue Dispatcher** checks every **15 minutes**, using the
+private current worker/session map and authoritative queue readiness. It wakes
+only eligible idle developers and does not duplicate direct Coordinator assignments
+or claim on their behalf. Legacy independent worker polls remain paused. Developers
+continue their own claims and report outcomes directly to Coordinator; after a
+claim settles they may continue eligible work under the current assignment policy.
+The background capacity/repository reporters run without invoking models.
 
 ## Claims and recovery
 
@@ -80,6 +106,11 @@ diagnostic: ownership does not expire, become administratively held, or become
 available to another worker when a heartbeat is missed. Supervised commands
 still stop on actual service loss/rejection. The worker may resume its claim
 once it verifies the operation state.
+
+Developers send their result and receipt directly to Coordinator, which records
+completion without retesting. The owning worker submits `finish` when directed
+through its existing claim; never transfer tokens or manufacture a blocked state
+for administrator closure. Confirm the service readback before calling it completed.
 
 Completion receipts require a summary and `execution_stopped: true`. Ordinary
 workers record merged source/evidence and use non-force pushes, resolving main
@@ -130,7 +161,7 @@ This also detects merges performed outside the queue. Repository configuration
 records a verified published baseline, not an assumed current branch tip.
 
 When main differs from the last verified publication, the service creates a
-publish task pinned to that exact commit, available to either Mac. A stable
+publish task pinned to that exact commit, available to an eligible qualified developer. A stable
 repository+commit key and a transaction prevent duplicate tasks across timer
 races/restarts. The same repository/commit is not queued twice. A new merged commit gets its own
 task at the next hourly check, regardless of an earlier publication task. Workers
@@ -173,10 +204,11 @@ Clients are distributed from the cluster host:
 
 ```sh
 ssh pi@192.168.2.13 'cat /home/pi/.local/share/nova-coordinator/bootstrap.py' > /tmp/nova-bootstrap.py
-python3 /tmp/nova-bootstrap.py --worker oliver-mac --repository-path /actual/nova/checkout
+python3 /tmp/nova-bootstrap.py --worker oliverhu-mac-studio-vm1 --repository-path /actual/nova/checkout
 ```
 
-Use the actual worker name and checkout. Existing configuration, build path,
+The command above illustrates an already enrolled VM1, not a new identity to
+copy. Use the actual supported/enrolled worker name and checkout. Existing configuration, build path,
 claims and credentials are preserved on client upgrades. Do not reinstall OS
 trust just to update the client. The optional `--trust-internal-ca` flag is only
 for deliberate initial trust setup. The installer manages only its own local
@@ -230,8 +262,9 @@ repairs. A new host resets that count; at most 6 host reassignments are allowed
 per task. Lifetime attempts and historical receipts remain available.
 
 Nova release tasks now include the macOS public release and an **iOS upload to
-App Store Connect only**, using the pinned source. No TestFlight distribution,
-App Review submission or public iOS release is part of this task. Completion
+App Store Connect only**, using the pinned source. Use the existing signed-in Xcode account for the upload. Do not touch TestFlight
+distribution, testers/groups or settings, and do not submit App Review or a public
+iOS release. Do not add routine App Store Connect browser/list preflights. Completion
 requires a verified `ios_upload` receipt (status, source commit, version/build,
 upload reference and explicit no-distribution/no-review flags). Completed past
 releases remain historical; they are not retroactively marked as iOS uploads.

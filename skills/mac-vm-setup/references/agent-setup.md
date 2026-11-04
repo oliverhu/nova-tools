@@ -1,0 +1,53 @@
+# Nova developers, coordinator and dispatcher
+
+Current Nova workflow as of November 3, 2026:
+
+| Role | Work |
+| --- | --- |
+| Delivery Coordinator | Intake, priorities, task IDs, assignments, human decisions, status and recording completion from developer reports; no extra source/runtime/UI/release validation |
+| Queue Dispatcher | Existing 15-minute readiness check; wakes an eligible idle mapped developer for a specific task without duplicate assignments or claiming for them |
+| VM1/VM2 developers | Self-claim; isolated implementation, actual acceptance, source audit, main integration, cleanup and direct completion report to Coordinator |
+| Studio heavy developer | Same ownership for assigned host work; configured heavy compilation stays on Studio and accounts for guest resource use |
+| Publisher | A qualified developer on a separate release claim; performs actual delivery checks and reports to Coordinator |
+| Service/reporters | Atomic claims, dependencies, retries, heartbeats and hourly release creation; no model or feature execution |
+
+The active service worker IDs are `oliverhu-mac-studio`,
+`oliverhu-mac-studio-vm1`, and `oliverhu-mac-studio-vm2`. Legacy `oliver-mac` and
+`oliver-mini` retain history; don't reactivate their old schedules. These are
+existing deployment identities, not names to reuse on arbitrary new machines.
+Coordinator/Dispatcher are chat roles, not additional queue workers. Keep actual
+chat/remote-host/project mappings and credentials in private machine state.
+
+A new concurrent machine needs a distinct identity supported by the current
+server/bootstrap/installer and enrolled with its own credential. A replacement
+must first settle the previous owner and reporter. The VM bootstrap must not
+copy another guest's worker credential, SSH identity or app consent record.
+
+Configure `COORD_HEAVY_WORKER` through the actual deployment process, not by
+editing a local manifest and assuming the server changed. For Nova it selects
+Studio for `engine_rebuild`; standard tasks still obey explicit capacities and
+required capabilities. Missing Studio capacity does not authorize guest fallback.
+
+Developers send Coordinator the service task ID/generation, exact landed commit,
+real test results, limitations, receipt path and stopped-operation evidence.
+Coordinator records completion without rerunning validation. The owning worker
+still uses its claim-compatible `finish` path when directed; administrative role
+does not justify copying a claim token or fabricating a blocked state. Confirm
+service completion separately from receipt delivery.
+
+Preserve the existing Dispatcher and separate hourly service release timer.
+Do not create extra polls while provisioning. Hourly publishers deliver pinned
+macOS installer/website metadata and iOS uploads through Xcode; they leave
+TestFlight, App Review and public iOS release untouched. This is release-task
+scope, never automatic follow-on from machine setup. Retain task-specific human
+holds and reconcile unknown effects before retries.
+
+The current service exposes 20 attempts per host and up to six reassignments;
+read its actual counters and policy before execution. A missing heartbeat does
+not relinquish a claim, and an approval wait is not a technical retry.
+
+When this skill comes from `nova-tools`, read its current `docs/agent-coordination.md`
+and `skill/SKILL.md` for the operational details. The portable folder remains
+self-contained without them. On another organization/deployment, retain the
+separation of responsibilities but discover its real roles, authorization and
+queue policy instead of importing Nova's schedules or release authority.

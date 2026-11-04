@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "purpose": "Planning and acceptance only; not consumed by Tart or Nova",
+  "host": {
+    "hostname": null,
+    "architecture": null,
+    "macos_version": null,
+    "account": null,
+    "home_directory": null,
+    "memory_bytes": null,
+    "tart_executable": null,
+    "tart_version": null,
+    "cache_path": null
+  },
+  "guests": [
+    {
+      "name": "dev-vm-1",
+      "role": "development-and-ui-testing",
+      "base_image_digest": null,
+      "cpu_count": null,
+      "memory_mib": null,
+      "display": "1920x1080",
+      "host_storage": {
+        "mount": null,
+        "volume_uuid": null,
+        "physical_identity": null,
+        "quota_bytes": null,
+        "reserve_bytes": null,
+        "tart_home": null,
+        "vm_disk_path": null,
+        "vm_disk_bytes": null
+      },
+      "guest_storage": {
+        "layout": "one-virtual-disk-shared-apfs-container",
+        "workspace_mount": null,
+        "workspace_uuid": null,
+        "source_checkout": null,
+        "artifact_root": null,
+        "xcode_path": null
+      },
+      "identity": {
+        "hostname": null,
+        "account": null,
+        "ssh_alias": null,
+        "host_key_fingerprint": null,
+        "queue_worker_id": null,
+        "codex_remote_host_id": null,
+        "codex_chat_id": null,
+        "codex_project_path": null
+      },
+      "capability_evidence": [],
+      "rollback_location": null,
+      "pending_human_actions": [],
+      "cutover_complete": false
+    }
+  ],
+  "capability_record_example": {
+    "capability": "browser",
+    "actor_path_or_bundle_id": null,
+    "launch_context": null,
+    "status": "pending",
+    "tested_at": null,
+    "evidence_path": null,
+    "cleanup_verified": false
+  },
+  "secrets_policy": "Only paths/nonsecret identifiers; no passwords, tokens, private keys or copied consent grants"
+}

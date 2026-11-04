@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mac VM Setup"
+  short_description: "Set up Mac hosts, Tart guests, and permissions"
+  default_prompt: "Use $mac-vm-setup to set up this Mac and its VMs, applying the recorded storage, permission, and verification lessons."

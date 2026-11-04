@@ -1,5 +1,9 @@
 # Set up a new Nova Mac
 
+For a host with Tart guests, start with the [portable VM setup skill](../skills/mac-vm-setup/SKILL.md).
+Read [current agent roles](agent-coordination.md) before worker enrollment: developers
+validate and report directly to Coordinator; Dispatcher handles eligible idle wakes.
+
 `scripts/setup-new-mac.py` prepares an Apple Silicon development Mac. It installs
 the toolchain dependencies, obtains the browser source, configures the selected
 APFS build storage, fetches and validates Nova provisioning files, installs the
@@ -79,11 +83,16 @@ packages are retained; there is no blanket upgrade. Peekaboo must come from its
 signed `openclaw/tap/peekaboo` distribution. Existing browser branches and staged
 work are preserved; setup fetches but never resets or pulls an existing checkout.
 
-The coordinator currently recognizes `oliver-mac` and `oliver-mini`. Set a role
-only when replacing that host, after its work has settled and its old reporter
-has stopped; record that with `old_worker_stopped: true`. A third concurrent Mac
-needs a new server-enrolled identity first. Onboarding installs with `--no-start`
-and does not claim tasks, start worker schedules or duplicate an active worker.
+The server, bootstrap and installer recognize `oliverhu-mac-studio`,
+`oliverhu-mac-studio-vm1` and `oliverhu-mac-studio-vm2`, plus the two retained legacy
+IDs `oliver-mac` and `oliver-mini`. Enroll a distinct credential for each worker.
+Do not reuse an active identity on a new machine. Legacy replacements require
+settled work, a stopped old reporter and `old_worker_stopped: true`. A further
+concurrent machine needs supported server/client identity configuration and
+credential enrollment; changing only the example JSON does not add a worker.
+Onboarding installs with `--no-start` and does not claim tasks, create chats or
+start worker schedules. Coordinator/Dispatcher are separate chat roles, not new
+worker credentials.
 Once the new host is ready, start its existing reporter/dashboard flow explicitly:
 
 ```sh
