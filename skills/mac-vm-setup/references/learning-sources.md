@@ -21,6 +21,7 @@ Original evidence root: `~/Migration/studio-20261102/`. These are optional audit
 | `~/Documents/ChatGPT/nova-tools/docs/new-mac-setup.md` | Helper scope, profile handling, explicit untested-on-new-machine limitation |
 | Browser `BUILD_STORAGE.md` and parent `AGENTS.md` | Guarded payloads, ignored host config, preserve source/private data |
 | “Nova — Delivery Coordinator”, recent November 3 turns | Roles/authority evolved; don't fossilize old holds or schedules into setup |
+| November 4 VM2 GitHub diagnosis and existing-route recovery receipts (private local access-repair records) | Matching registered/public/private-derived identity can first be rejected and later authenticate unchanged; check actual worker repository access, preserve failure evidence, and do not infer a need for rotation or claim push success from a read |
 
 Official references checked:
 

@@ -8,6 +8,7 @@
 | Xcode works interactively, script fails | Hardcoded developer path differed | Resolve override/alias and test real worker context |
 | Simulator exit zero, app unusable | Boot/migration semantics missed | Require migration, SpringBoard and app launch; retract false pass |
 | SSH/heartbeat succeed, Browser denied | Independent app access/connection | Supported guest settings action, then same-chat nonce check |
+| GitHub lists the key, SSH rejects it | Registration metadata is not authentication; an earlier rejection can later clear without changes | Follow [GitHub access diagnosis](github-access.md); compare actual identity/pair/route, bound checks, preserve evidence and avoid unjustified rotation |
 | MCP initialize succeeds, catalog fails | Signed peer ancestry rejected | Current official launcher and tools/list; preserve signature enforcement |
 | Bridge waits/long JSON fail | Synthetic turn metadata or PTY truncation | Actual thread/turn IDs and complete framing; reconcile before replay |
 | Permission green, capture fails | Wrong Bridge/local actor or desktop | Check selected source, identity and real capture route |

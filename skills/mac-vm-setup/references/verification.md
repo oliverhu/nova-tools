@@ -6,7 +6,7 @@ Maintain a private capability ledger for each host/guest. Record `passed`, `pend
 | --- | --- |
 | Storage | Correct host/guest UUIDs, canonical paths, writable APFS, physical headroom, all relevant checkout guards passing |
 | VM boot | Intended external image actually open, usable guest desktop, rollback disks detached |
-| SSH/Git | Fresh pinned noninteractive access and repository read under guest identity |
+| SSH/GitHub | On each development host/guest: [verified trust and intended identity, fresh noninteractive authentication, and actual repository read](github-access.md); record normal push separately as verified or not exercised |
 | Toolchain | Correct Xcode/SDK selection; small compile executes from guarded output |
 | Simulator if requested | Semantic boot/migration, SpringBoard, app launch/termination, owned-device shutdown |
 | UI automation | Real capture and scoped input/readback in owned fixture through actual worker/runner |

@@ -9,7 +9,7 @@ Maintain a matrix per machine with actor path/bundle ID/signature, launch contex
 | macOS privacy | Actual app/helper's Accessibility, Screen Recording and action-specific event input grants |
 | Files/volumes | Exact process can access source, fixtures and artifacts, including removable-volume prompts |
 | Codex app tools | Signed-in guest app and worker chat can discover/use requested Browser, Terminal and other tools |
-| SSH/Git | Correct public-key enrollment, pinned peer and allowed commands |
+| SSH/Git | Correct public-key enrollment, verified host trust, actual account authentication and intended repository read under this worker's identity; see [GitHub access](github-access.md) |
 | Queue | Unique enrolled worker, scoped credentials, TLS trust and actual heartbeat |
 | Signing | Matching certificate **and private key**, usable keychain, profile and app entitlements |
 
