@@ -68,6 +68,25 @@ Engine rebuilds use the configured `COORD_HEAVY_WORKER` (Studio) and wait if it
 is unavailable; never fall back to guests. Standard tasks use eligible developers
 with the required capacity/capabilities. Account for guest allocations on the host.
 
+### Use available compute
+
+The human instructed on **2026-11-04**: use **at least 80% of available
+resources** for active compute-intensive work. Do not preserve an arbitrary
+conservative compiler cap while the host is mostly idle. For a parallel build,
+start near 80% of logical CPUs and tune concurrency to measured host utilization,
+actual guest/other-worker activity, memory pressure, swap growth and storage I/O.
+Allocated guest vCPUs are not continuously busy host cores; do not subtract them
+as though they were. Preserve required free-storage reserves and existing work.
+
+Measure after startup and at materially different build phases. If compute is
+available and the workload can use it, raise concurrency until the target is
+met. Reduce it only for a demonstrated bottleneck or pressure condition, and
+record that evidence and the resulting limit. The target is useful throughput,
+not filling RAM or forcing parallelism into serial work. When a fixed running
+command must restart to change its limit, settle only its owned invocation,
+retain completed incremental outputs, and resume the same task. Report actual
+utilization and remaining-time uncertainty rather than job count alone.
+
 Claim with `next` or `next --task ID` and read the task and prior receipts.
 A task is atomically assigned to one worker. There are NO global publishing,
 main, desktop, or integration locks. Task ownership remains until the worker
