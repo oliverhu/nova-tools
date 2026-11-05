@@ -49,6 +49,10 @@ work and claims. Track their readback of the source commit/coordination hash;
 delivered messages alone do not prove the instructions were loaded. Coordinator
 keeps the expected revision and current routes in private operational state.
 This is instruction maintenance, not additional validation of developer results.
+Track the skill source commit and installed content hashes separately from the
+client/service code revision. After a skill change, refresh the existing client
+distribution bundle so a later client upgrade carries the current instructions.
+Use the existing upkeep activity; no new polling schedule or app restart.
 
 Dispatcher checks that the mapped worker's synchronization receipt matches the
 expected revision before new assignments. If stale or unavailable, report it to
@@ -143,7 +147,9 @@ main. Rebase/resolve conflicts and rerun affected checks if main advances;
 use normal non-force pushes. Record exact branch/commit/merge and evidence.
 Send Coordinator the task ID/generation, outcome, landed commit, actual results,
 receipt path, limitations and settled-execution evidence. Coordinator records it
-without retesting; never call partial acceptance complete. For service completion,
+without retesting; never call partial acceptance complete. Evidence sent before
+the verified finish readback is pending service completion, not a completed task.
+For service completion,
 the owning worker uses its existing claim-compatible `finish` when directed and
 returns the readback. Do not transfer tokens, impersonate a worker or fake a
 blocked state to enable administrative completion.
@@ -154,9 +160,41 @@ publication follows the manual path below without waiting for the hourly check.
 Report progress with `heartbeat ID --progress "..."`. Use `run ID -- command`
 for long commands; its watchdog stops owned processes on service rejection or
 unavailability. A quiet reasoning interval does not expire ownership. Stop on
-an actual ownership rejection. Finish using `finish ID --receipt /path.json`
-with summary and `execution_stopped: true` only after operations settle; use
-`--outcome blocked` for a technical failure or `failed` for an unknown outcome requiring inspection. Use `--outcome pending_external_approval` when work waits on Apple, an external reviewer or an explicit human approval. Pending External Approval never retries automatically; do not resubmit approval requests. Resume only after actual approval is verified and the task is explicitly returned to the queue. A failed/blocked task does
+an actual ownership rejection. After operations settle, finish with
+`finish ID --outcome OUTCOME --receipt /path.json`, a summary and
+`execution_stopped: true`. Use `completed` only for completed acceptance,
+`blocked` for a technical failure, `failed` for an unknown outcome requiring
+inspection, and `pending_external_approval` for Apple, an external reviewer or an
+explicit human approval. Pass the outcome explicitly and make any receipt
+`outcome` agree. The current client honors an explicit receipt outcome when the
+argument is omitted; only a receipt without an outcome retains the legacy
+completed default. Client and service reject contradictory outcomes and refuse
+completion when `acceptance_complete` is explicitly false.
+
+Before reporting completion, **developers and Dispatcher verify the actual API
+outcome**, using the finish response and a fresh `nova-coord show ID` readback.
+Check the expected task/generation, final `status: completed`, the completed
+step position, settled execution and consistency with the actual receipt. An
+explicit noncompleted receipt outcome or `acceptance_complete: false` prevents a
+completion report even if a legacy API record says completed. A successful CLI
+exit, a completed intermediate step, a passed subset or the receipt filename
+does not establish whole-task completion. Report blocked, failed, queued or
+pending states as returned, retaining incomplete acceptance and limitations.
+
+Coordinator records completion only after this administrative API/receipt check;
+it does not repeat developer product validation. Dispatcher uses current API
+outcomes for completion reports and dependency readiness, and flags contradictory
+records to Coordinator instead of treating them as qualified prerequisites. On
+a mismatch or uncertain finish response, preserve the receipt, generation,
+history, dependencies and counters, then inspect `show` before any retry. Use the
+existing supported, audited admin correction for a genuinely erroneous recorded
+completion; never replay a stale finish, edit the database or reset counters.
+Coordinator owns keeping this rule installed and acknowledged across the three
+developers and Dispatcher through the synchronization procedure above.
+
+Pending External Approval never retries automatically; do not resubmit approval
+requests. Resume only after actual approval is verified and the task is explicitly
+returned to the queue. A failed/blocked task does
 not consume the worker forever. Settled blocked tasks become eligible automatically after 15 minutes, up to 20 attempts per host assignment. Automatic retries stay on the current host until 20 attempts are used; then another eligible host can claim the task. Explicit scheduling handoffs still preserve hard worker/resource requirements. Inspect prior receipts and external state before side effects; apply a concrete correction before repeating a failed operation. Report `fix_attempts_used` for the current host assignment in each receipt. A claim on a different host resets this count to zero and increments `reassignment_count`; at most 6 host changes are allowed per task. Same-host retries never reset the count. Keep lifetime evidence and `total_fix_attempts`. Its owner can also use `retry ID --receipt /path.json`
 after a concrete correction and proof of `execution_stopped`,
 `external_state_checked`, and descriptive `evidence`. Never replay an unknown

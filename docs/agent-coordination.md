@@ -56,16 +56,31 @@ two 8-vCPU/24-GiB guests ran; remeasure before changing allocation.
    private route and applicable standing Nova-to-Nova messaging authorization.
    Include task ID/generation, outcome, exact branch/base/landed commit, actual
    tests and remaining limits, receipt path, and settled execution/cleanup.
-5. Coordinator records completion from that report without an additional review
-   or test pass. Respect the API's claim fencing: `finish` authenticates the owning
+   A pre-finish evidence report is pending service completion; reserve completed
+   reports for the verified API outcome below.
+5. Coordinator records the reported evidence without an additional review or
+   test pass, and records completion only after the API check below. Respect the
+   API's claim fencing: `finish` authenticates the owning
    worker and claim. When needed, Coordinator directs that owner to submit the
    supplied receipt through `nova-coord finish`; the owner returns the service
    readback. Never copy claim tokens, impersonate a worker, or mark a running task
    blocked merely to make administrator reconciliation possible.
-6. Only report **completed** after the service readback confirms it. An owner can
-   settle blocked/failed/pending-approval work through its normal outcome path and
-   report that result. Once its claim settles, it may continue eligible work under
-   the current assignment policy; never interrupt an existing claim to do so.
+6. The owner finishes with an explicit `--outcome` matching any receipt `outcome`.
+   Client and service reject contradictory outcomes and completion with
+   `acceptance_complete: false`. Omission honors an explicit receipt outcome;
+   the legacy completed default applies only when the receipt has no outcome.
+   Before developers or Dispatcher report **completed**, inspect both the finish
+   response and a fresh `nova-coord show ID`: expected task/generation, completed
+   final step/status, stopped execution and no contradictory receipt outcome or
+   acceptance flag. A successful command, intermediate step or partial test pass
+   is insufficient. Report actual blocked/failed/queued/pending states and limits.
+7. Coordinator performs this administrative API/receipt consistency check before
+   recording completion, without product retesting. Dispatcher verifies current
+   API outcomes for completion and dependency readiness. Preserve contradictory
+   or uncertain finish records and route them to Coordinator for the existing
+   supported audited correction; never replay stale finishes, edit the database,
+   erase history or reset counters. Once a claim settles, its owner may continue
+   eligible work under current policy without interrupting another claim.
 
 The coordinator's lack of retesting does not reduce developer acceptance. Repair
 tasks remain separate, deduplicated prerequisites; a tool repair's completion does
@@ -148,6 +163,10 @@ After policy changes land, new enrollment/reconnection, or a client upgrade:
 3. Store a private per-host receipt with source commit, expected/observed file
    hashes, installation paths and timestamp. Keep the expected revision/current
    host/chat routes in Coordinator's private operational state, never in Git.
+   Track instruction adoption separately from client/service code revisions;
+   Coordinator maintains the finish-outcome/API-readback rule as part of this
+   expected instruction baseline. Refresh the existing client distribution bundle
+   after skill changes so upgrades cannot restore older instructions.
 4. Notify all developers and Dispatcher to reread the installed coordination
    skill at a safe boundary without stopping ongoing work. Obtain readback of the
    revision/coordination hash. Message delivery and installed bytes are separate
