@@ -187,6 +187,53 @@ is idempotent while the corrected state is unchanged. This operation neither
 qualifies acceptance nor resumes execution; later scheduling uses the existing
 supported workflow.
 
+## Correcting omitted attempt accounting
+
+An administrator can reconcile verified omitted attempts on unfinished ordinary
+work using `nova-coord --config /private/admin.json correct-attempts TASK_ID
+--receipt /private/attempt-correction.json`. This is accounting only: it cannot
+grant another attempt, complete acceptance, transfer ownership or settle execution.
+
+The request has exactly `request_id`, `generation`, `expected`, `corrected`,
+`owner_proof`, `historical_proof` and descriptive `evidence`. Use a stable unique
+request ID. `expected` contains the freshly observed `status`, `owner`, `step`,
+`reassignment_count`, `attempts_host`, `fix_attempts_used`, `total_fix_attempts`
+and `attempt_base`. `corrected` contains only the three counters. Every counter
+must be monotonic and `total_fix_attempts = attempt_base + fix_attempts_used`.
+
+The owning proof contains exact `task`, `worker`, `generation`, `step`, corrected
+`fix_attempts_used`, `verified: true`, `execution_stopped: true`,
+`external_state_checked: true`, `unsettled_operations: []`, `receipt`, `source`
+and descriptive `evidence`. Each receipt/source reference has exactly an absolute
+`path` and its immutable file `sha256`. The administrator must actually verify
+the owning report, files/hashes, historical provenance and coordinated quiet
+boundary; the service cannot read guest files or independently stop processes.
+Refresh ownership, counters and settlement evidence immediately before applying.
+
+Each historical proof contains exact `task`, earlier `worker`, `generation`,
+`step`, `recorded_attempts`, actual `fix_attempts_used`, positive
+`omitted_attempts`, `verified: true`, `receipt`, `source` and descriptive
+`evidence`. This bounded path supports closed assignments on a different host.
+Actual minus recorded usage must equal the omission; all historical omissions
+must exactly explain the prior-base increase. The service verifies real claim,
+settled receipt and host-transfer history and rejects reuse of an assignment,
+including a different retry generation on that same assignment.
+
+For example, restoring a prior host's omitted fifteen and a current host's two
+changes `0/20/base20` to `2/37/base35`. The host limit remains twenty and the
+reassignment limit remains six. An already consumed explicit attempt exception
+may be preserved, never created or enlarged through this correction.
+
+The transaction changes only the three counters. It preserves claims, generation,
+owner, task status/step, leases, dependencies, requirements, approvals, results,
+publication state and all original receipts/events. An append-only before/after
+audit is returned and exposed by fresh task detail as `attempt_corrections`;
+`capabilities.attempt_correction: 1` advertises support. Check the response and
+fresh task detail against the exact target. An identical request is idempotent
+even after later task progress: it returns the original audit and current task
+without replaying a delta. A changed duplicate or stale new request is rejected.
+Never compensate for missing support with a fake finish or direct database edit.
+
 ## Hourly publish tasks
 
 A durable service timer checks each configured repository on the hour. Workers

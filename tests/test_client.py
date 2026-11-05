@@ -31,7 +31,11 @@ class ClientTests(unittest.TestCase):
                 client.request.return_value = {'task': {'status': 'blocked'}}
                 with patch.object(sys, 'argv', ['nova-coord', 'correct-outcome', 'task', '--receipt', str(path)]): main()
                 self.assertEqual('/api/tasks/task/correct-outcome', client.request.call_args.args[0])
+                with patch.object(sys, 'argv', ['nova-coord', 'correct-attempts', 'task', '--receipt', str(path)]): main()
+                self.assertEqual(('/api/tasks/task/correct-attempts', json.loads(path.read_text())),
+                                 client.request.call_args.args)
                 client.claim.assert_not_called()
+                client.claim_body.assert_not_called()
 
     def test_finish_uses_explicit_receipt_outcome_and_rejects_mismatch_before_request(self):
         client = Client.__new__(Client)

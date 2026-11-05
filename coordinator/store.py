@@ -15,6 +15,7 @@ from pathlib import Path
 from .approvals import approval_payload, approval_id
 from .workers import WORKERS
 from .outcomes import finish_outcome
+from .attempt_accounting import BINDING, correction_payload
 
 
 class Conflict(Exception):
@@ -82,6 +83,11 @@ CREATE TABLE IF NOT EXISTS outcome_corrections (
  actor TEXT NOT NULL, request TEXT NOT NULL, prior_state TEXT NOT NULL,
  prior_receipt TEXT NOT NULL, corrected_state TEXT NOT NULL, at REAL NOT NULL,
  UNIQUE(task_id,generation));
+CREATE TABLE IF NOT EXISTS attempt_corrections (
+ id TEXT PRIMARY KEY, task_id TEXT NOT NULL, generation INTEGER NOT NULL,
+ request_id TEXT NOT NULL, actor TEXT NOT NULL, request TEXT NOT NULL,
+ prior_state TEXT NOT NULL, corrected_state TEXT NOT NULL, at REAL NOT NULL,
+ UNIQUE(task_id,request_id));
 """
 
 
@@ -698,7 +704,7 @@ class Store:
     @staticmethod
     def _correction_readback(row):
         return {**dict(row), **{k: json.loads(row[k]) for k in
-                ('request', 'prior_state', 'prior_receipt', 'corrected_state')}}
+                ('request', 'prior_state', 'prior_receipt', 'corrected_state') if k in row.keys()}}
 
     def correct_outcome(self, actor, ident, body):
         """Reopen only a completed work step whose original result says blocked.
@@ -767,6 +773,82 @@ class Store:
                 'previous_step': row['step'], 'step': current['step'],
                 'evidence': request['evidence']}))
             audit = db.execute('SELECT * FROM outcome_corrections WHERE id=?', (correction_id,)).fetchone()
+            return {'task': self.public_task(current), 'correction': self._correction_readback(audit), 'replayed': False}
+
+    def correct_attempts(self, actor, ident, body):
+        """Reconcile verified omitted attempts without changing the live claim."""
+        if actor != 'admin':
+            raise Conflict('Attempt correction requires administrator identity')
+        try:
+            request = correction_payload(body, WORKERS, FIX_ATTEMPT_LIMIT, REASSIGNMENT_LIMIT)
+        except ValueError as error:
+            raise Invalid(str(error)) from None
+        proofs = [request['owner_proof'], *request['historical_proof']]
+        if any(proof['task'] != ident for proof in proofs):
+            raise Invalid('Every evidence proof must bind this exact task')
+        correction_id = hashlib.sha256(encoded({'task': ident, 'request': request}).encode()).hexdigest()
+        with self.transaction() as db:
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            if not row:
+                raise Conflict('Unknown task for attempt correction')
+            prior = db.execute('SELECT * FROM attempt_corrections WHERE task_id=? AND request_id=?',
+                               (ident, request['request_id'])).fetchone()
+            if prior:
+                if prior['id'] != correction_id:
+                    raise Conflict('Correction request_id already binds different evidence or counters')
+                return {'task': self.public_task(row), 'correction': self._correction_readback(prior), 'replayed': True}
+            if (row['generation'] != request['generation']
+                    or any(row[key] != request['expected'][key] for key in BINDING)):
+                raise Conflict('Task ownership, generation or counters changed; reload before correcting')
+            if row['task_type'] != 'work' or any(s['kind'] != 'work' for s in json.loads(row['steps'])):
+                raise Conflict('Only ordinary work attempt accounting can be corrected')
+            used = request['corrected']['fix_attempts_used']
+            exception = json.loads(row['attempt_exception'])
+            consumed_extra = (row['fix_attempts_used'] == FIX_ATTEMPT_LIMIT + 1
+                              and exception.get('consumed_generation') == row['generation'])
+            if used > FIX_ATTEMPT_LIMIT and not (consumed_extra and used == row['fix_attempts_used']):
+                raise Invalid('Correction cannot grant an attempt above the existing host limit')
+            def transfer_for(proof):
+                claims = db.execute("SELECT id,detail FROM events WHERE task_id=? AND actor=? AND kind='claimed'",
+                                    (ident, proof['worker']))
+                claim = next((c for c in claims if re.search(
+                    r'\bgeneration ' + str(proof['generation']) + r';', c['detail'])), None)
+                if not claim:
+                    raise Conflict('Historical proof does not match an actual service-owned assignment')
+                return db.execute("SELECT id,detail FROM events WHERE task_id=? AND kind='host-reassigned' AND id>? ORDER BY id LIMIT 1",
+                                  (ident, claim['id'])).fetchone()
+
+            accounted = set()
+            for audit in db.execute('SELECT request FROM attempt_corrections WHERE task_id=?', (ident,)):
+                for proof in json.loads(audit['request'])['historical_proof']:
+                    accounted.add(transfer_for(proof)['id'])
+            for proof in request['historical_proof']:
+                # Claim identity comes from service history; file provenance and
+                # omitted counts are explicitly verified by the administrator.
+                transfer = transfer_for(proof)
+                transferred = json.loads(transfer['detail']) if transfer else {}
+                if (transferred.get('from') != proof['worker']
+                        or transferred.get('previous_assignment_attempts') != proof['recorded_attempts']):
+                    raise Conflict('Historical recorded attempts do not match the actual host transfer')
+                if transfer['id'] in accounted:
+                    raise Conflict('Historical assignment has already been accounted for')
+                accounted.add(transfer['id'])
+                if not db.execute('SELECT 1 FROM receipts WHERE task_id=? AND generation=? AND step=?',
+                                  (ident, proof['generation'], proof['step'])).fetchone():
+                    raise Conflict('Historical assignment has no settled service receipt')
+            before = {key: row[key] for key in ('generation', *BINDING)}
+            new = request['corrected']
+            db.execute('UPDATE tasks SET fix_attempts_used=?,total_fix_attempts=?,attempt_base=? WHERE id=?',
+                       (new['fix_attempts_used'], new['total_fix_attempts'], new['attempt_base'], ident))
+            current = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            after = {key: current[key] for key in ('generation', *BINDING)}
+            db.execute('INSERT INTO attempt_corrections VALUES(?,?,?,?,?,?,?,?,?)',
+                       (correction_id, ident, row['generation'], request['request_id'], actor,
+                        encoded(request), encoded(before), encoded(after), self.clock()))
+            self.event(db, actor, 'attempts-corrected', ident, encoded({
+                'correction_id': correction_id, 'request_id': request['request_id'],
+                'before': before, 'after': after, 'evidence': request['evidence']}))
+            audit = db.execute('SELECT * FROM attempt_corrections WHERE id=?', (correction_id,)).fetchone()
             return {'task': self.public_task(current), 'correction': self._correction_readback(audit), 'replayed': False}
 
     def _approval_readback(self, db, row):
@@ -1058,7 +1140,7 @@ class Store:
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
                 "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
-                                "outcome_correction":1,"finish_outcome_consistency":1},
+                                "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1},
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 
@@ -1075,4 +1157,6 @@ class Store:
             task["events"]=[dict(r) for r in db.execute("SELECT * FROM events WHERE task_id=? ORDER BY id",(ident,))]
             task['outcome_corrections']=[self._correction_readback(r) for r in db.execute(
                 'SELECT * FROM outcome_corrections WHERE task_id=? ORDER BY at', (ident,))]
+            task['attempt_corrections']=[self._correction_readback(r) for r in db.execute(
+                'SELECT * FROM attempt_corrections WHERE task_id=? ORDER BY at,rowid', (ident,))]
             return task

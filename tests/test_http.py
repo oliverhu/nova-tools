@@ -130,6 +130,55 @@ class HTTPTests(unittest.TestCase):
         self.assertNotIn(claim['claim_token'].encode(), raw)
         self.assertNotIn(current['claim_token'].encode(), raw)
 
+    def test_attempt_accounting_correction_is_admin_only_and_preserves_live_claim(self):
+        from coordinator.attempt_accounting import BINDING
+        store = self.server.store
+        for worker in ('oliver-mac', 'oliver-mini'):
+            store.pulse(worker, {'capacity': {'cpus': 12}})
+        ident = store.submit('admin', {'request_key': 'accounting-http', 'title': 'Retained parent'})['id']
+        identity = lambda c: {'generation': c['task']['generation'], 'step': c['task']['step'],
+                              'claim_token': c['claim_token']}
+        settled = {'execution_stopped': True, 'external_state_checked': True, 'evidence': 'Verified settled handoff'}
+        first = store.claim('oliver-mini', ident)
+        store.finish('oliver-mini', ident, {**identity(first), 'outcome': 'blocked', 'receipt': {
+            'summary': 'Original failures', 'execution_stopped': True, 'fix_attempts_used': 20}})
+        store.defer('admin', ident, {'generation': 1, 'worker': 'oliver-mac', **settled})
+        prior = store.claim('oliver-mac', ident)
+        store.defer('oliver-mac', ident, {**identity(prior), 'worker': 'oliver-mini', **settled})
+        current = store.claim('oliver-mini', ident)
+        before = store.detail(ident)
+        ref = {'path': '/private/verified/evidence.json', 'sha256': 'a' * 64}
+        body = {'request_id': 'http-verified-accounting', 'generation': before['generation'],
+            'expected': {k: before[k] for k in BINDING},
+            'corrected': {'fix_attempts_used': 2, 'total_fix_attempts': 37, 'attempt_base': 35},
+            'owner_proof': {'task': ident, 'worker': 'oliver-mini', 'generation': before['generation'],
+                'step': 0, 'fix_attempts_used': 2, 'verified': True, **settled,
+                'unsettled_operations': [], 'receipt': ref, 'source': ref},
+            'historical_proof': [{'task': ident, 'worker': 'oliver-mac',
+                'generation': prior['task']['generation'], 'step': 0,
+                'recorded_attempts': 0, 'fix_attempts_used': 15, 'omitted_attempts': 15,
+                'verified': True, 'receipt': ref, 'source': ref, 'evidence': 'Verified omitted failures'}],
+            'evidence': 'Admin checked owner settlement and immutable historical ledgers'}
+        url = '/api/tasks/' + ident + '/correct-attempts'
+        for actor in (None, 'oliver-mac', 'oliver-mini'):
+            self.assertEqual(403, self.request(url, actor, body)[0])
+        stale = {**body, 'generation': 99, 'owner_proof': {**body['owner_proof'], 'generation': 99}}
+        self.assertEqual(409, self.request(url, 'admin', stale)[0])
+        self.assertEqual(before, store.detail(ident))
+        code, raw, _ = self.request(url, 'admin', body)
+        self.assertEqual(200, code)
+        result = json.loads(raw)
+        self.assertFalse(result['replayed'])
+        self.assertEqual(('running', 2, 37, 35), tuple(result['task'][k] for k in
+            ('status', 'fix_attempts_used', 'total_fix_attempts', 'attempt_base')))
+        _, raw, _ = self.request('/api/tasks/' + ident)
+        readback = json.loads(raw)
+        self.assertEqual(result['correction'], readback['attempt_corrections'][0])
+        self.assertEqual(before['receipts'], readback['receipts'])
+        self.assertNotIn(current['claim_token'].encode(), raw)
+        self.assertTrue(json.loads(self.request(url, 'admin', body)[1])['replayed'])
+        self.assertEqual(200, self.request('/api/tasks/' + ident + '/heartbeat', 'oliver-mini', identity(current))[0])
+
     def test_admin_can_cancel_queued_task_through_reconcile(self):
         _,raw,_=self.request('/api/tasks',body={'request_key':'cancel-http','title':'Resolved in 0.2.21'})
         ident=json.loads(raw)['id'];url='/api/tasks/'+ident+'/reconcile'

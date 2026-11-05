@@ -263,6 +263,8 @@ def main():
     reconcile=sub.add_parser("reconcile");reconcile.add_argument("task");reconcile.add_argument("--file",type=Path,required=True)
     correct=sub.add_parser("correct-outcome",help="Admin-only correction of an evidence-bound erroneous completion")
     correct.add_argument("task");correct.add_argument("--receipt",type=Path,required=True)
+    attempts=sub.add_parser("correct-attempts",help="Admin-only monotonic correction of verified omitted attempts")
+    attempts.add_argument("task");attempts.add_argument("--receipt",type=Path,required=True)
     retry=sub.add_parser("retry");retry.add_argument("task");retry.add_argument("--receipt",type=Path,required=True)
     approve=sub.add_parser('approve',help='Apply one verified human decision to its explicitly covered pending tasks')
     approve.add_argument('--receipt',type=Path,required=True)
@@ -294,6 +296,7 @@ def main():
     elif args.command=="finish":result=client.finish(args.task,json.loads(args.receipt.read_text()),args.outcome)
     elif args.command=="reconcile":result=client.request(f"/api/tasks/{args.task}/reconcile",json.loads(args.file.read_text()))
     elif args.command=="correct-outcome":result=client.request(f"/api/tasks/{args.task}/correct-outcome",json.loads(args.receipt.read_text()))
+    elif args.command=="correct-attempts":result=client.request(f"/api/tasks/{args.task}/correct-attempts",json.loads(args.receipt.read_text()))
     elif args.command=="retry":
         receipt=json.loads(args.receipt.read_text())
         result=client.request(f"/api/tasks/{args.task}/retry", {**receipt, **client.claim_body(args.task)})
