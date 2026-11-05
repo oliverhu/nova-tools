@@ -257,8 +257,8 @@ supported workflow.
 
 ## Correcting omitted attempt accounting
 
-An administrator can reconcile verified omitted attempts on unfinished ordinary
-work using `nova-coord --config /private/admin.json correct-attempts TASK_ID
+An administrator can reconcile verified omitted attempts on unfinished or
+genuinely completed ordinary work using `nova-coord --config /private/admin.json correct-attempts TASK_ID
 --receipt /private/attempt-correction.json`. This is accounting only: it cannot
 grant another attempt, complete acceptance, transfer ownership or settle execution.
 
@@ -278,6 +278,26 @@ the owning report, files/hashes, historical provenance and coordinated quiet
 boundary; the service cannot read guest files or independently stop processes.
 Refresh ownership, counters and settlement evidence immediately before applying.
 
+For `expected.status: "completed"`, also supply `completion_proof` with exactly
+`receipt: {path, sha256}` referencing the immutable original completion file,
+`expected_result_sha256` and `expected_receipt_sha256`. Hash the fresh public
+`result` and final service receipt envelope (`{outcome, receipt}`), respectively,
+using sorted compact JSON. `owner_proof.step` binds the current completed step;
+the final stored receipt is at that step minus one in the same generation.
+The existing `owner_proof.receipt` references the
+owning worker's immutable omission addendum, not a replacement completion.
+The administrator verifies both files and the exact task/generation/assignment.
+The service requires the completed final step, actual owner and matching stored
+receipt/result explicitly stating `outcome: "completed"`,
+`acceptance_complete: true`, `execution_stopped: true`,
+`external_state_checked: true` and `unsettled_operations: []`. Missing or
+contradictory acceptance, retained resources and publish/engine tasks are rejected.
+The corrected counts must remain within the existing assignment allowance;
+no new attempts or grant are created. This path preserves completed acceptance,
+main/result evidence, original receipt bytes, generation, claims and all grants.
+It does not reopen, retest or reclaim the feature. Unrelated work continues;
+coordinate only the short service rollout boundary if support needs deploying.
+
 Each historical proof contains exact `task`, earlier `worker`, `generation`,
 `step`, `recorded_attempts`, actual `fix_attempts_used`, positive
 `omitted_attempts`, `verified: true`, `receipt`, `source` and descriptive
@@ -288,15 +308,18 @@ settled receipt and host-transfer history and rejects reuse of an assignment,
 including a different retry generation on that same assignment.
 
 For example, restoring a prior host's omitted fifteen and a current host's two
-changes `0/20/base20` to `2/37/base35`. The host limit remains twenty and the
-reassignment limit remains six. An already consumed explicit attempt exception
+changes `0/20/base20` to `2/37/base35`. The default host limit remains twenty;
+existing verified assignment allowances remain unchanged. The reassignment
+limit remains six. An already consumed explicit attempt exception
 may be preserved, never created or enlarged through this correction.
 
 The transaction changes only the three counters. It preserves claims, generation,
 owner, task status/step, leases, dependencies, requirements, approvals, results,
 publication state and all original receipts/events. An append-only before/after
 audit is returned and exposed by fresh task detail as `attempt_corrections`;
-`capabilities.attempt_correction: 1` advertises support. Check the response and
+`capabilities.attempt_correction: 1` advertises support;
+`capabilities.completed_attempt_correction: 1` advertises the completed-work
+extension. Check the response and
 fresh task detail against the exact target. An identical request is idempotent
 even after later task progress: it returns the original audit and current task
 without replaying a delta. A changed duplicate or stale new request is rejected.

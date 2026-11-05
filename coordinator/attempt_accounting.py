@@ -41,6 +41,10 @@ def reference(value):
 def correction_payload(body, workers, host_limit, reassignment_limit):
     fields = {'request_id', 'generation', 'expected', 'corrected', 'owner_proof',
               'historical_proof', 'evidence'}
+    completed = (isinstance(body, dict) and isinstance(body.get('expected'), dict)
+                 and body['expected'].get('status') == 'completed')
+    if completed:
+        fields.add('completion_proof')
     require(isinstance(body, dict) and set(body) == fields, 'Exact attempt-correction fields required')
     require(len(json.dumps(body)) <= 40000, 'Attempt correction exceeds bound')
     require(isinstance(body['request_id'], str) and re.fullmatch('[a-zA-Z0-9_-]{8,80}', body['request_id']),
@@ -50,8 +54,18 @@ def correction_payload(body, workers, host_limit, reassignment_limit):
     old, new = body['expected'], body['corrected']
     require(isinstance(old, dict) and set(old) == set(BINDING), 'Exact expected task/counter binding required')
     require(isinstance(new, dict) and set(new) == set(COUNTERS), 'Exact corrected counter tuple required')
-    require(old['status'] in ('queued', 'running', 'held', 'blocked', 'failed', 'pending_external_approval'),
-            'Only existing unfinished work can have accounting corrected')
+    require(old['status'] in ('queued', 'running', 'held', 'blocked', 'failed',
+                              'pending_external_approval', 'completed'),
+            'Only existing unfinished or verified completed work can have accounting corrected')
+    if completed:
+        proof = body['completion_proof']
+        require(isinstance(proof, dict) and set(proof) == {
+            'receipt', 'expected_result_sha256', 'expected_receipt_sha256'},
+            'Exact original completion proof required')
+        reference(proof['receipt'])
+        for key in ('expected_result_sha256', 'expected_receipt_sha256'):
+            require(isinstance(proof[key], str) and re.fullmatch('[0-9a-f]{64}', proof[key]),
+                    'Exact canonical JSON SHA-256 required: ' + key)
     require(old['owner'] is None or old['owner'] in workers, 'Unknown expected owner')
     require(old['attempts_host'] in workers, 'Known assignment host required')
     for key in ('step', 'reassignment_count', *COUNTERS):

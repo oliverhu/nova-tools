@@ -823,7 +823,7 @@ class Store:
             return {'task': self.public_task(current), 'correction': self._correction_readback(audit), 'replayed': False}
 
     def correct_attempts(self, actor, ident, body):
-        """Reconcile verified omitted attempts without changing the live claim."""
+        """Reconcile omitted attempts without changing ownership or outcomes."""
         if actor != 'admin':
             raise Conflict('Attempt correction requires administrator identity')
         try:
@@ -849,6 +849,26 @@ class Store:
                 raise Conflict('Task ownership, generation or counters changed; reload before correcting')
             if row['task_type'] != 'work' or any(s['kind'] != 'work' for s in json.loads(row['steps'])):
                 raise Conflict('Only ordinary work attempt accounting can be corrected')
+            if row['status'] == 'completed':
+                if (row['step'] != len(json.loads(row['steps'])) or row['step'] < 1
+                        or row['owner'] != request['owner_proof']['worker']):
+                    raise Conflict('Exact completed final step and owning worker required')
+                previous = db.execute('SELECT receipt FROM receipts WHERE task_id=? AND generation=? AND step=?',
+                                      (ident, row['generation'], row['step'] - 1)).fetchone()
+                envelope = json.loads(previous['receipt']) if previous else None
+                result = json.loads(row['result'])
+                if (not envelope or envelope.get('outcome') != 'completed'
+                        or envelope.get('receipt') != result or result.get('outcome') != 'completed'
+                        or result.get('acceptance_complete') is not True
+                        or result.get('execution_stopped') is not True
+                        or result.get('external_state_checked') is not True
+                        or result.get('unsettled_operations') != []):
+                    raise Conflict('Original receipt must explicitly prove completed acceptance and settled execution')
+                for value, key in ((result, 'expected_result_sha256'), (envelope, 'expected_receipt_sha256')):
+                    if hashlib.sha256(encoded(value).encode()).hexdigest() != request['completion_proof'][key]:
+                        raise Conflict('Original completion evidence changed; reload exact hashes')
+                if db.execute('SELECT 1 FROM locks WHERE task_id=?', (ident,)).fetchone():
+                    raise Conflict('Unexpected retained task resource; explicit disposition required')
             used = request['corrected']['fix_attempts_used']
             exception = json.loads(row['attempt_exception'])
             consumed_extra = (row['fix_attempts_used'] == FIX_ATTEMPT_LIMIT + 1
@@ -1342,7 +1362,7 @@ class Store:
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
                 "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
                                 "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1,
-                                "attempt_allowance_amendments":1},
+                                "attempt_allowance_amendments":1,"completed_attempt_correction":1},
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 

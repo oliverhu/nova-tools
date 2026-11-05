@@ -226,6 +226,39 @@ class HTTPTests(unittest.TestCase):
         self.assertTrue(json.loads(self.request(url, 'admin', body)[1])['replayed'])
         self.assertEqual(200, self.request('/api/tasks/' + ident + '/heartbeat', 'oliver-mini', identity(current))[0])
 
+    def test_completed_attempt_correction_uses_existing_admin_route_and_preserves_acceptance(self):
+        from test_completed_attempt_accounting import completed_request
+        store = self.server.store
+        store.pulse('oliver-mini', {'capacity': {'cpus': 12}})
+        ident = store.submit('admin', {'request_key': 'closed-http', 'title': 'Qualified feature'})['id']
+        claim = store.claim('oliver-mini', ident)
+        store.finish('oliver-mini', ident, {'generation': claim['task']['generation'],
+            'step': claim['task']['step'], 'claim_token': claim['claim_token'], 'outcome': 'completed',
+            'receipt': {'summary': 'Actual acceptance passed and operations settled',
+                'outcome': 'completed', 'acceptance_complete': True, 'execution_stopped': True,
+                'external_state_checked': True, 'unsettled_operations': [], 'fix_attempts_used': 2,
+                'landed_commit': 'a' * 40}})
+        before = store.detail(ident); body = completed_request(store, ident, 3)
+        url = '/api/tasks/' + ident + '/correct-attempts'
+        for actor in (None, 'oliver-mac', 'oliver-mini'):
+            self.assertEqual(403, self.request(url, actor, body)[0])
+        missing = {k: v for k, v in body.items() if k != 'completion_proof'}
+        self.assertEqual(400, self.request(url, 'admin', missing)[0])
+        self.assertEqual(before, store.detail(ident))
+        code, raw, _ = self.request(url, 'admin', body)
+        self.assertEqual(200, code); result = json.loads(raw)
+        self.assertFalse(result['replayed'])
+        _, raw, _ = self.request('/api/tasks/' + ident)
+        after = json.loads(raw)
+        self.assertEqual(('completed', 1, 3, 3), tuple(after[k] for k in
+                         ('status', 'step', 'fix_attempts_used', 'total_fix_attempts')))
+        for key in ('result', 'receipts', 'generation', 'owner', 'attempt_allowance'):
+            self.assertEqual(before[key], after[key], key)
+        self.assertEqual([result['correction']], after['attempt_corrections'])
+        self.assertTrue(json.loads(self.request(url, 'admin', body)[1])['replayed'])
+        self.assertEqual(1, json.loads(self.request('/api/state')[1])['capabilities']['completed_attempt_correction'])
+        self.assertNotIn(claim['claim_token'].encode(), raw)
+
     def test_admin_can_cancel_queued_task_through_reconcile(self):
         _,raw,_=self.request('/api/tasks',body={'request_key':'cancel-http','title':'Resolved in 0.2.21'})
         ident=json.loads(raw)['id'];url='/api/tasks/'+ident+'/reconcile'
