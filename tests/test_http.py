@@ -153,6 +153,30 @@ class HTTPTests(unittest.TestCase):
         _, raw, _ = self.request('/api/state')
         self.assertEqual(1, json.loads(raw)['capabilities']['attempt_allowances'])
 
+    def test_admin_amendment_preserves_actual_running_claim_and_prior_audit(self):
+        import test_attempt_allowances as fixtures
+        from test_allowance_amendments import amendment_request
+        store = self.server.store
+        for worker in (fixtures.VM1, fixtures.VM2): store.pulse(worker, {'capacity': {'cpus': 12}})
+        ident = fixtures.prepared_task(store)
+        first = store.apply_attempt_allowance('admin', fixtures.allowance_request(store, ident))
+        claim = store.claim(fixtures.VM1, ident); body = amendment_request(store, ident)
+        url = '/api/attempt-allowances/amend'
+        for actor in (None, 'oliver-mini', 'oliver-mac'):
+            self.assertEqual(403, self.request(url, actor, body)[0])
+        self.assertEqual(409, self.request(url, 'admin', {**body, 'previous_grant_id': 'b' * 64})[0])
+        code, raw, _ = self.request(url, 'admin', body); self.assertEqual(200, code)
+        result = json.loads(raw); self.assertFalse(result['replayed'])
+        self.assertEqual(('running', fixtures.VM1, claim['task']['generation'], 20, 40, 20),
+                         tuple(result['task'][k] for k in ('status', 'owner', 'generation', 'fix_attempts_used', 'fix_attempt_limit', 'fix_attempts_remaining')))
+        _, raw, _ = self.request('/api/tasks/' + ident)
+        fresh = json.loads(raw); self.assertEqual(first['grant'], fresh['attempt_allowances'][0])
+        self.assertEqual(result['grant'], fresh['attempt_allowance_amendments'][0])
+        self.assertNotIn(claim['claim_token'].encode(), raw)
+        self.assertTrue(json.loads(self.request(url, 'admin', body)[1])['replayed'])
+        _, raw, _ = self.request('/api/state')
+        self.assertEqual(1, json.loads(raw)['capabilities']['attempt_allowance_amendments'])
+
     def test_attempt_accounting_correction_is_admin_only_and_preserves_live_claim(self):
         from coordinator.attempt_accounting import BINDING
         store = self.server.store

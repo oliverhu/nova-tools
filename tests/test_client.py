@@ -37,6 +37,24 @@ class ClientTests(unittest.TestCase):
                                      [call.args for call in client.request.call_args_list])
                     client.claim.assert_not_called(); client.claim_body.assert_not_called()
 
+    def test_amendment_cli_reads_matching_amendment_history_without_claiming(self):
+        from coordinator.client import main
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'amendment.json'; body = {'task': '1234567890abcdef', 'request_id': 'new-human-source'}
+            path.write_text(json.dumps(body)); grant = {'id': 'b' * 64}
+            for matching in (True, False):
+                with patch('coordinator.client.Client') as constructor, patch('sys.stdout', new_callable=io.StringIO):
+                    client = constructor.return_value
+                    client.request.side_effect = [{'grant': grant}, {'attempt_allowance_amendments':
+                        [{'id': grant['id'], 'request': body}] if matching else []}]
+                    with patch.object(sys, 'argv', ['nova-coord', 'attempt-allowance-amend', '--receipt', str(path)]):
+                        if matching: main()
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, 'readback'): main()
+                    self.assertEqual([('/api/attempt-allowances/amend', body), ('/api/tasks/' + body['task'],)],
+                                     [call.args for call in client.request.call_args_list])
+                    client.claim.assert_not_called(); client.claim_body.assert_not_called()
+
     def test_finish_cli_omission_preserves_receipt_choice_and_admin_cli_does_not_claim(self):
         from coordinator.client import main
         with tempfile.TemporaryDirectory() as temporary:

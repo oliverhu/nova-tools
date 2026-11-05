@@ -95,6 +95,12 @@ CREATE TABLE IF NOT EXISTS attempt_allowances (
  request_id TEXT NOT NULL, request TEXT NOT NULL, prior_state TEXT NOT NULL,
  granted_state TEXT NOT NULL, at REAL NOT NULL,
  UNIQUE(task_id,request_id), UNIQUE(task_id,worker,reassignment_count));
+CREATE TABLE IF NOT EXISTS attempt_allowance_amendments (
+ id TEXT PRIMARY KEY, task_id TEXT NOT NULL, worker TEXT NOT NULL,
+ reassignment_count INTEGER NOT NULL, previous_grant_id TEXT UNIQUE NOT NULL,
+ source_key TEXT UNIQUE NOT NULL, request_id TEXT NOT NULL, request TEXT NOT NULL,
+ prior_state TEXT NOT NULL, granted_state TEXT NOT NULL, at REAL NOT NULL,
+ UNIQUE(task_id,request_id));
 """
 
 
@@ -871,10 +877,11 @@ class Store:
                 if (transferred.get('from') != proof['worker']
                         or transferred.get('previous_assignment_attempts') != proof['recorded_attempts']):
                     raise Conflict('Historical recorded attempts do not match the actual host transfer')
-                prior_grant = db.execute('SELECT granted_state FROM attempt_allowances WHERE task_id=? AND worker=? AND reassignment_count=?',
-                    (ident, proof['worker'], transferred['reassignment_count'] - 1)).fetchone()
-                prior_limit = (json.loads(prior_grant['granted_state'])['attempt_allowance']['effective_limit']
-                               if prior_grant else FIX_ATTEMPT_LIMIT)
+                assignment = (ident, proof['worker'], transferred['reassignment_count'] - 1)
+                grants = db.execute('SELECT granted_state FROM attempt_allowances WHERE task_id=? AND worker=? AND reassignment_count=? '
+                    'UNION ALL SELECT granted_state FROM attempt_allowance_amendments WHERE task_id=? AND worker=? AND reassignment_count=?',
+                    (*assignment, *assignment)).fetchall()
+                prior_limit = max([FIX_ATTEMPT_LIMIT, *(json.loads(g['granted_state'])['attempt_allowance']['effective_limit'] for g in grants)])
                 if proof['fix_attempts_used'] > prior_limit:
                     raise Invalid('Historical attempts exceed that assignment\'s verified limit')
                 if transfer['id'] in accounted:
@@ -1045,6 +1052,9 @@ class Store:
                     raise Conflict('Human source/request already binds different allowance evidence')
                 return {'grant': self._correction_readback(prior), 'replayed': True,
                         'task': {**self.public_task(row), **self.scheduling(db, row)}}
+            if db.execute('SELECT 1 FROM attempt_allowance_amendments WHERE source_key=? OR (task_id=? AND request_id=?)',
+                          (source_key, ident, request['request_id'])).fetchone():
+                raise Conflict('Human source/request already binds an allowance amendment')
             expected = request['expected']
             public = self.public_task(row)
             if (row['generation'] != request['generation']
@@ -1084,6 +1094,76 @@ class Store:
                 'used': row['fix_attempts_used'], 'effective_limit': grant['effective_limit']}))
             row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
             audit = db.execute('SELECT * FROM attempt_allowances WHERE id=?', (grant_id,)).fetchone()
+            return {'grant': self._correction_readback(audit), 'replayed': False,
+                    'task': {**self.public_task(row), **self.scheduling(db, row)}}
+
+    def amend_attempt_allowance(self, actor, body):
+        """Append one newly authorized extension without disturbing a live claim."""
+        if actor != 'admin':
+            raise Conflict('Allowance amendment requires administrator identity')
+        try:
+            request = allowance_payload(body, WORKERS, amendment=True)
+        except ValueError as error:
+            raise Invalid(str(error)) from None
+        ident = request['task']
+        grant_id = hashlib.sha256(encoded(request).encode()).hexdigest()
+        source_key = hashlib.sha256(encoded(request['source']).encode()).hexdigest()
+        with self.transaction() as db:
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            if not row:
+                raise Conflict('Unknown task')
+            prior = db.execute('SELECT * FROM attempt_allowance_amendments WHERE source_key=? OR (task_id=? AND request_id=?)',
+                               (source_key, ident, request['request_id'])).fetchone()
+            if prior:
+                if prior['id'] != grant_id:
+                    raise Conflict('Human source/request already binds different amendment evidence')
+                return {'grant': self._correction_readback(prior), 'replayed': True,
+                        'task': {**self.public_task(row), **self.scheduling(db, row)}}
+            if db.execute('SELECT 1 FROM attempt_allowances WHERE source_key=? OR (task_id=? AND request_id=?)',
+                          (source_key, ident, request['request_id'])).fetchone():
+                raise Conflict('An amendment requires a distinct new primary human authorization')
+            expected = request['expected']; public = self.public_task(row)
+            if (row['generation'] != request['generation']
+                    or any(row[k] != expected[k] for k in BINDING)
+                    or any(hashlib.sha256(encoded(public[k]).encode()).hexdigest() != expected[k + '_sha256']
+                           for k in ('requirements', 'attempt_allowance', 'attempt_exception'))
+                    or public['fix_attempt_limit'] != expected['fix_attempt_limit']):
+                raise Conflict('Task, current grant or assignment changed; refresh before amendment')
+            previous = json.loads(row['attempt_allowance']); receipt = json.loads(row['result'])
+            if (not self.allowance_active(row) or previous['id'] != request['previous_grant_id']
+                    or json.loads(row['requirements']).get('worker') != request['worker']
+                    or row['attempts_host'] != request['worker']
+                    or row['total_fix_attempts'] != row['attempt_base'] + row['fix_attempts_used']
+                    or row['fix_attempts_used'] > previous['effective_limit']
+                    or row['reassignment_count'] > REASSIGNMENT_LIMIT
+                    or receipt.get('human_stop') is True
+                    or (row['status'] == 'queued' and receipt.get('execution_stopped') is not True)):
+                raise Conflict('Amend only the exact active host grant with verified quiet execution')
+            if row['task_type'] != 'work' or any(s['kind'] != 'work' for s in json.loads(row['steps'])):
+                raise Conflict('Only ordinary work supports allowance amendment')
+            if db.execute('SELECT 1 FROM attempt_allowance_amendments WHERE previous_grant_id=?',
+                          (previous['id'],)).fetchone():
+                raise Conflict('This grant already has a later amendment')
+            now = self.clock()
+            grant = {'id': grant_id, 'request': request, 'worker': request['worker'],
+                     'reassignment_count': row['reassignment_count'], 'attempt_base': row['attempt_base'],
+                     'effective_limit': previous['effective_limit'] + request['additional_attempts'],
+                     'granted_at': now, 'expired_at': None, 'previous_grant_id': previous['id'],
+                     'root_grant_id': previous.get('root_grant_id', previous['id'])}
+            before = {k: row[k] for k in ('generation', *BINDING)}
+            before['attempt_allowance'] = previous
+            db.execute('UPDATE tasks SET attempt_allowance=? WHERE id=?', (encoded(grant), ident))
+            after = {**before, 'attempt_allowance': grant}
+            db.execute('INSERT INTO attempt_allowance_amendments VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                       (grant_id, ident, request['worker'], row['reassignment_count'], previous['id'],
+                        source_key, request['request_id'], encoded(request), encoded(before), encoded(after), now))
+            self.event(db, actor, 'attempt-allowance-amended', ident, encoded({
+                'grant_id': grant_id, 'previous_grant_id': previous['id'], 'source': request['source'],
+                'worker': request['worker'], 'reassignment_count': row['reassignment_count'],
+                'previous_limit': previous['effective_limit'], 'effective_limit': grant['effective_limit'],
+                'used': row['fix_attempts_used']}))
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            audit = db.execute('SELECT * FROM attempt_allowance_amendments WHERE id=?', (grant_id,)).fetchone()
             return {'grant': self._correction_readback(audit), 'replayed': False,
                     'task': {**self.public_task(row), **self.scheduling(db, row)}}
 
@@ -1261,7 +1341,8 @@ class Store:
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
                 "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
-                                "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1},
+                                "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1,
+                                "attempt_allowance_amendments":1},
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 
@@ -1282,4 +1363,6 @@ class Store:
                 'SELECT * FROM attempt_corrections WHERE task_id=? ORDER BY at,rowid', (ident,))]
             task['attempt_allowances']=[self._correction_readback(r) for r in db.execute(
                 'SELECT * FROM attempt_allowances WHERE task_id=? ORDER BY at,rowid', (ident,))]
+            task['attempt_allowance_amendments']=[self._correction_readback(r) for r in db.execute(
+                'SELECT * FROM attempt_allowance_amendments WHERE task_id=? ORDER BY at,rowid', (ident,))]
             return task

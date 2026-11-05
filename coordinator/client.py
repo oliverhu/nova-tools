@@ -272,6 +272,8 @@ def main():
     exception.add_argument('--receipt',type=Path,required=True)
     allowance=sub.add_parser('attempt-allowance',help='Admin-only finite current-host allowance from an explicit human decision')
     allowance.add_argument('--receipt',type=Path,required=True)
+    amend=sub.add_parser('attempt-allowance-amend',help='Admin-only extension from a distinct new primary human authorization')
+    amend.add_argument('--receipt',type=Path,required=True)
     sub.add_parser('approval-recover',help='Reconcile interrupted, already verified local approval receipts')
     approval_status=sub.add_parser('approval-status',help='Read an applied approval and current task eligibility')
     approval_status.add_argument('approval_id')
@@ -310,12 +312,14 @@ def main():
         if observed.get('attempt_exception',{}).get('request') != receipt:
             raise RuntimeError('Attempt exception readback did not match; inspect before executing')
         result['task']=observed
-    elif args.command=='attempt-allowance':
+    elif args.command in ('attempt-allowance','attempt-allowance-amend'):
         receipt=json.loads(args.receipt.read_text())
-        result=client.request('/api/attempt-allowances/apply',receipt)
+        amendment=args.command=='attempt-allowance-amend'
+        result=client.request('/api/attempt-allowances/'+('amend' if amendment else 'apply'),receipt)
         observed=client.request('/api/tasks/'+receipt['task'])
         grant_id=result['grant']['id']
-        if not any(g['id']==grant_id and g['request']==receipt for g in observed.get('attempt_allowances',[])):
+        history='attempt_allowance_amendments' if amendment else 'attempt_allowances'
+        if not any(g['id']==grant_id and g['request']==receipt for g in observed.get(history,[])):
             raise RuntimeError('Attempt allowance audit readback did not match; inspect before executing')
         result['task']=observed
     elif args.command=='approval-recover':result={'recovered':client.recover_approvals()}

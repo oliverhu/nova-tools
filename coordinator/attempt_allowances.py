@@ -2,16 +2,18 @@
 import json
 import re
 
-from .attempt_accounting import BINDING, integer, require, text
+from .attempt_accounting import BINDING, integer, require, text, reference
 
 
 EXPECTED = (*BINDING, 'requirements_sha256', 'attempt_allowance_sha256', 'attempt_exception_sha256')
 
 
-def allowance_payload(body, workers):
+def allowance_payload(body, workers, amendment=False):
     fields = {'request_id', 'task', 'generation', 'worker', 'source', 'response',
               'additional_attempts', 'expected', 'decision_verified',
               'execution_stopped', 'external_state_checked', 'evidence'}
+    if amendment:
+        fields |= {'previous_grant_id', 'unsettled_operations', 'settlement_receipt'}
     require(isinstance(body, dict) and set(body) == fields, 'Exact attempt-allowance fields required')
     require(len(json.dumps(body)) <= 16000, 'Allowance evidence exceeds bound')
     require(isinstance(body['request_id'], str) and re.fullmatch('[a-zA-Z0-9_-]{8,80}', body['request_id']),
@@ -30,9 +32,21 @@ def allowance_payload(body, workers):
     integer(body['additional_attempts'], 'additional_attempts', 1)
     require(body['additional_attempts'] <= 10, 'Only a bounded grant of up to ten extra attempts is supported')
     expected = body['expected']
-    require(isinstance(expected, dict) and set(expected) == set(EXPECTED), 'Exact expected task/assignment binding required')
-    require(expected['status'] == 'queued' and expected['owner'] is None,
-            'Allowance requires settled queued work without a live owner')
+    expected_fields = set(EXPECTED) | ({'fix_attempt_limit'} if amendment else set())
+    require(isinstance(expected, dict) and set(expected) == expected_fields, 'Exact expected task/assignment binding required')
+    if amendment:
+        require((expected['status'] == 'running' and expected['owner'] == body['worker'])
+                or (expected['status'] == 'queued' and expected['owner'] is None),
+                'Amendment requires this owner\'s quiet running or settled queued task')
+        integer(expected['fix_attempt_limit'], 'expected.fix_attempt_limit', 21)
+        require(isinstance(body['previous_grant_id'], str) and re.fullmatch('[0-9a-f]{64}', body['previous_grant_id']),
+                'Exact current grant ID required')
+        require(type(body['unsettled_operations']) is list and body['unsettled_operations'] == [],
+                'All actual owning operations must be settled before amendment')
+        reference(body['settlement_receipt'])
+    else:
+        require(expected['status'] == 'queued' and expected['owner'] is None,
+                'Allowance requires settled queued work without a live owner')
     require(expected['attempts_host'] == body['worker'], 'Allowance belongs to the current assignment host')
     for key in ('step', 'reassignment_count', 'fix_attempts_used', 'total_fix_attempts', 'attempt_base'):
         integer(expected[key], 'expected.' + key)

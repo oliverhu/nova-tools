@@ -196,10 +196,34 @@ expires it permanently, including if the original host later returns.
 
 Task detail exposes append-only `attempt_allowances` with request and before/after
 evidence. A primary human source cannot mint multiple grants or be retargeted;
-only one grant per host assignment is supported. Exact replay returns its original
+only one initial grant per host assignment is supported. Exact replay returns its original
 audit and current state without replenishment. Default twenty, the six-transfer
 cap and the legacy single-extra path remain unchanged; grants cannot stack with
 that exception. A fresh attendance response is still required where applicable.
+
+A **distinct new primary human authorization** can extend the exact current grant
+by another 1–10 through admin `POST /api/attempt-allowances/amend` or
+`attempt-allowance-amend --receipt /private/amendment.json`. Add
+`previous_grant_id`, `unsettled_operations: []` and an independently verified
+`settlement_receipt: {path, sha256}` to the request; add `fix_attempt_limit` to
+the exact expected-state fields. It supports a genuinely quiet running task
+owned by the same worker, or settled queued work, preserving the live claim,
+generation, status, counters and all existing evidence. The administrator must
+actually verify owning settlement at apply; the service cannot inspect guest
+processes/files. No fake finish or deferral is needed.
+
+`capabilities.attempt_allowance_amendments: 1` advertises support. Latest
+`attempt_allowance.id` hashes the new immutable request; its `previous_grant_id`
+and `root_grant_id` link the original audit. The new limit is the exact prior
+limit plus the new authorization, never an automatic refill. Initial audits stay
+unchanged; append-only `attempt_allowance_amendments` records before/after state.
+Each distinct authorization can extend the latest parent, with stale-parent
+comparison and no forks. Exact replay returns the old audit/current state without
+adding again. Primary sources cannot be reused across initial grants/amendments.
+Same-host attendance cycles preserve the latest authority; real host transfer
+expires the entire chain. A caller must reject a candidate bound to an older
+grant and qualify fresh authority using the amendment's expected prior limit
+and matching immutable parent audit, rather than assume `20 + additional`.
 
 ## Correcting an erroneous completion
 
