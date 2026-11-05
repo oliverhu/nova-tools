@@ -343,6 +343,19 @@ check the actual public release and must not downgrade it. An out-of-order old
 receipt cannot regress the stored publication baseline. There is no resource
 lock, per-repository publication gate, or lock table used by claims/publishers.
 
+New `oliverhu/nova-browser` combined macOS+iOS release tasks, hourly or explicitly
+started, use the existing hard `requirements.worker: "oliverhu-mac-studio"`.
+Studio is the currently qualified publisher with the required signed-in Xcode
+upload readiness. Generic `macos`/`development` capacity does not establish that
+readiness on a guest. The existing eligibility/claim checks enforce this routing
+even for an unfiltered worker `next`; if Studio is busy, offline or paused, the
+release waits without falling back to a VM. Ordinary work and other repositories
+keep their existing routing. This is assignment policy, not an account probe or
+additional approval/validation stage. Coordinator maintains actual onboarding
+readiness and revises the route when another publisher is genuinely qualified.
+Existing tasks, source pins, holds, claims and publication evidence are untouched;
+exact-target deduplication does not replace an earlier task to change its route.
+
 Only the worker that claims the generated task publishes:
 
 ```sh

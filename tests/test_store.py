@@ -34,13 +34,13 @@ class StoreTests(unittest.TestCase):
                 'testflight_distributed':False,'submitted_for_review':False})
         return self.store.finish(t['owner'],t['id'],{**self.body(c),'outcome':outcome,'receipt':{'summary':'Verified result','execution_stopped':True,**receipt}})
 
-    def configure(self,name='oliverhu/nova-browser'):
+    def configure(self,name='owner/repo'):
         return self.store.configure_repository({'repository':name,'published_commit':'a'*40})
 
-    def observe(self,head='b',repo='oliverhu/nova-browser',at=None):
+    def observe(self,head='b',repo='owner/repo',at=None):
         return self.store.observe_repository('oliver-mini',{'repository':repo,'branch':'main','commit':head*40,'observed_at':self.now if at is None else at})
 
-    def release(self,repo='oliverhu/nova-browser',head='b'):
+    def release(self,repo='owner/repo',head='b'):
         self.configure(repo);self.now=(int(self.now)//3600+1)*3600;self.observe(head,repo);self.pulse()
         return self.store.tick_releases()[0]
 
@@ -525,17 +525,17 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(Invalid):self.add('fake',task_type='publish')
 
     def test_explicit_release_starts_now_and_hourly_tick_does_not_duplicate(self):
-        self.configure();self.observe()
+        self.configure('oliverhu/nova-browser');self.observe(repo='oliverhu/nova-browser')
         self.assertEqual([],self.store.tick_releases())
         ids=self.store.tick_releases('oliverhu/nova-browser');self.assertEqual(1,len(ids))
         t=self.store.detail(ids[0]);self.assertEqual('b'*40,t['result']['release_target']['commit'])
         self.assertEqual(90,t['priority']);self.assertIn('ios_app_store_connect_upload_only',t['delivery_targets'])
         self.assertEqual([],self.store.tick_releases('oliverhu/nova-browser'))
-        self.now=3600;self.observe();self.assertEqual([],self.store.tick_releases())
+        self.now=3600;self.observe(repo='oliverhu/nova-browser');self.assertEqual([],self.store.tick_releases())
 
     def test_explicit_release_rejects_stale_or_unknown_repository(self):
         with self.assertRaises(Invalid):self.store.tick_releases('unknown/repo')
-        self.configure();self.observe();self.now+=601
+        self.configure('oliverhu/nova-browser');self.observe(repo='oliverhu/nova-browser');self.now+=601
         with self.assertRaises(Conflict):self.store.tick_releases('oliverhu/nova-browser')
         self.assertEqual([],self.store.snapshot()['tasks'])
 
@@ -591,7 +591,9 @@ class StoreTests(unittest.TestCase):
         self.assertEqual('b'*40,self.store.snapshot()['repositories'][0]['published_head'])
 
     def test_nova_release_requires_ios_upload_without_distribution(self):
-        self.release();c=self.store.claim('oliver-mini')
+        self.release('oliverhu/nova-browser')
+        self.store.pulse('oliverhu-mac-studio',{'capacity':{'cpus':12}})
+        c=self.store.claim('oliverhu-mac-studio')
         self.assertIn('ios_app_store_connect_upload_only',c['task']['delivery_targets'])
         valid={'status':'uploaded','source_commit':'b'*40,'version':'0.2.21','build_number':'21',
                'upload_ref':'apple-upload:verified-fixture','testflight_distributed':False,'submitted_for_review':False}

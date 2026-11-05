@@ -112,6 +112,16 @@ or settings actions; no App Review or public iOS release. Do not add routine App
 Store Connect browser/list preflights to the Xcode upload. Reconcile uncertain
 upload/publication outcomes before retrying and never downgrade a newer release.
 
+New combined Nova macOS+iOS publisher tasks use the existing hard requirement
+`worker: oliverhu-mac-studio`, for hourly and explicit starts. Studio currently
+has qualified Xcode upload readiness; a generic development heartbeat does not
+qualify VM1 or VM2. Normal claim eligibility enforces the route, including
+unfiltered `next`, and waits if Studio is busy/offline/paused. Coordinator keeps
+the actual readiness baseline current and revises routing only when another
+publisher is qualified. No account probe, extra approval, timer or peer review
+is added. Existing claims/holds/targets are preserved rather than regenerated;
+ordinary developer work and other repositories retain their current routing.
+
 These are Nova release-task instructions, not permission to publish while doing
 onboarding or updating this repository. Source push, client install, service
 deployment, macOS delivery and iOS upload are distinct actions.

@@ -395,6 +395,12 @@ class HTTPTests(unittest.TestCase):
         self.request('/api/repositories/observe','oliver-mini',{'repository':'oliverhu/nova-browser','commit':'b'*40,'observed_at':time.time()})
         code,body,_=self.request('/api/releases/start','admin',{'repository':'oliverhu/nova-browser'})
         self.assertEqual(200,code);self.assertEqual(1,len(json.loads(body)['created_ids']))
+        ident=json.loads(body)['created_ids'][0]
+        _,raw,_=self.request('/api/tasks/'+ident)
+        self.assertEqual({'worker':'oliverhu-mac-studio'},json.loads(raw)['requirements'])
+        self.request('/api/worker/pulse','oliver-mini',{'capacity':{'cpus':12,'capabilities':['macos','development']}})
+        _,raw,_=self.request('/api/worker/claim','oliver-mini',{'task_id':ident})
+        self.assertIsNone(json.loads(raw)['task'])
 
     def test_repository_configuration_and_observations_require_identity(self):
         body={'repository':'owner/repo','published_commit':'a'*40}

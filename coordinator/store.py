@@ -1332,16 +1332,21 @@ class Store:
                 ident = uuid.uuid4().hex[:16]
                 title = "Publish "+repo["name"]+" at "+repo["merged_head"][:12]
                 instructions = ("Publish the merged source pinned in release_target after release validation. "
-                    "Either Mac may claim this task; there is no shared publishing lock. "
+                    "Only workers meeting this task's requirements may claim; there is no shared publishing lock. "
                     "Use the normal signed/notarized release procedure; verify the public artifact before completing. Check the current public release before publishing and never downgrade a newer release; report a superseded target as blocked with exact evidence instead. "
                     "Record published_commit equal to the pinned target and publication_ref. If release metadata is committed to main, also record release_commit after verifying it contains only the release metadata on top of this target; this becomes the published baseline and prevents an endless release loop. "
                     "Do not incorporate later feature changes. If publication outcome is unknown, stop and inspect external state before any retry. "
                     "After settled completion or failure, immediately pull another eligible task.")
+                requirements = {}
                 if repo['name']=='oliverhu/nova-browser':
+                    # Studio is the currently qualified combined Mac+iOS
+                    # publisher. Generic development capacity does not prove
+                    # signed-in Xcode upload readiness on either guest.
+                    requirements = {'worker': 'oliverhu-mac-studio'}
                     instructions += ' ' + IOS_UPLOAD_POLICY
                 steps = [{"name":"Validate and publish merged changes","kind":"publish","instructions":instructions}]
                 db.execute("""INSERT INTO tasks(id,request_key,request_hash,title,description,created,updated,submitted_by,priority,compute,requirements,dependencies,steps,result,task_type)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ident,key,hashlib.sha256(key.encode()).hexdigest(),title,instructions,now,now,"admin" if repository else "hourly-scheduler",90 if repository else 50,"standard","{}","[]",encoded(steps),encoded({"release_target":target}),"publish"))
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ident,key,hashlib.sha256(key.encode()).hexdigest(),title,instructions,now,now,"admin" if repository else "hourly-scheduler",90 if repository else 50,"standard",encoded(requirements),"[]",encoded(steps),encoded({"release_target":target}),"publish"))
                 self.event(db, "admin" if repository else "hourly-scheduler", "submitted", ident, title)
                 created.append(ident)
             return created
