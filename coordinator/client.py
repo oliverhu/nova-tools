@@ -270,6 +270,8 @@ def main():
     approve.add_argument('--receipt',type=Path,required=True)
     exception=sub.add_parser('attempt-exception',help='Bind one explicitly verified extra attempt to an applied human approval')
     exception.add_argument('--receipt',type=Path,required=True)
+    allowance=sub.add_parser('attempt-allowance',help='Admin-only finite current-host allowance from an explicit human decision')
+    allowance.add_argument('--receipt',type=Path,required=True)
     sub.add_parser('approval-recover',help='Reconcile interrupted, already verified local approval receipts')
     approval_status=sub.add_parser('approval-status',help='Read an applied approval and current task eligibility')
     approval_status.add_argument('approval_id')
@@ -307,6 +309,14 @@ def main():
         observed=client.request('/api/tasks/'+receipt['task'])
         if observed.get('attempt_exception',{}).get('request') != receipt:
             raise RuntimeError('Attempt exception readback did not match; inspect before executing')
+        result['task']=observed
+    elif args.command=='attempt-allowance':
+        receipt=json.loads(args.receipt.read_text())
+        result=client.request('/api/attempt-allowances/apply',receipt)
+        observed=client.request('/api/tasks/'+receipt['task'])
+        grant_id=result['grant']['id']
+        if not any(g['id']==grant_id and g['request']==receipt for g in observed.get('attempt_allowances',[])):
+            raise RuntimeError('Attempt allowance audit readback did not match; inspect before executing')
         result['task']=observed
     elif args.command=='approval-recover':result={'recovered':client.recover_approvals()}
     elif args.command=='approval-status':result=client.request('/api/approvals/'+args.approval_id)

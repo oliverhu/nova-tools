@@ -16,6 +16,7 @@ from .approvals import approval_payload, approval_id
 from .workers import WORKERS
 from .outcomes import finish_outcome
 from .attempt_accounting import BINDING, correction_payload
+from .attempt_allowances import allowance_payload
 
 
 class Conflict(Exception):
@@ -88,6 +89,12 @@ CREATE TABLE IF NOT EXISTS attempt_corrections (
  request_id TEXT NOT NULL, actor TEXT NOT NULL, request TEXT NOT NULL,
  prior_state TEXT NOT NULL, corrected_state TEXT NOT NULL, at REAL NOT NULL,
  UNIQUE(task_id,request_id));
+CREATE TABLE IF NOT EXISTS attempt_allowances (
+ id TEXT PRIMARY KEY, task_id TEXT NOT NULL, worker TEXT NOT NULL,
+ reassignment_count INTEGER NOT NULL, source_key TEXT UNIQUE NOT NULL,
+ request_id TEXT NOT NULL, request TEXT NOT NULL, prior_state TEXT NOT NULL,
+ granted_state TEXT NOT NULL, at REAL NOT NULL,
+ UNIQUE(task_id,request_id), UNIQUE(task_id,worker,reassignment_count));
 """
 
 
@@ -134,6 +141,8 @@ class Store:
                 db.execute('ALTER TABLE tasks ADD COLUMN retry_after REAL')
             if 'attempt_exception' not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN attempt_exception TEXT NOT NULL DEFAULT '{}'")
+            if 'attempt_allowance' not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN attempt_allowance TEXT NOT NULL DEFAULT '{}'")
             if 'reassignment_count' not in columns:
                 db.execute('BEGIN IMMEDIATE')
                 db.execute('ALTER TABLE tasks ADD COLUMN reassignment_count INTEGER NOT NULL DEFAULT 0')
@@ -200,30 +209,39 @@ class Store:
         task = dict(row)
         task.pop("claim_hash", None)
         task.pop("request_hash", None)
-        for field in ("requirements", "dependencies", "steps", "result", "attempt_exception"):
+        for field in ("requirements", "dependencies", "steps", "result", "attempt_exception", "attempt_allowance"):
             task[field] = json.loads(task[field])
         task["current_step"] = task["steps"][task["step"]] if task["step"] < len(task["steps"]) else None
         task["execution_policy"] = ("Publish only the pinned release target; no global locks. Verify external outcome before reporting success."
             if task["current_step"] and task["current_step"]["kind"] == "publish" else
             "Implement, test and merge. DO NOT PUBLISH Nova from ordinary work. Only engine rebuilds are heavy. No global locks; ownership does not expire on missed heartbeat. If UI test tooling blocks a feature, enqueue or reuse a concrete UI-tool repair task and wait on its task ID; preserve feature acceptance and prior attempt history. Product defects and missing account access are not UI-tool failures. For scheduling waits, return settled work through POST /api/tasks/ID/defer with claim identity, execution_stopped, external_state_checked, evidence, and worker and/or dependencies; keep it queued rather than blocked. After settled work, immediately pull again.")
         task["heartbeat_stale"] = task["status"] == "running" and (task["lease_until"] or 0) <= self.clock()
-        task['fix_attempt_limit'] = FIX_ATTEMPT_LIMIT
-        exception = task['attempt_exception']
-        if exception and (self.exception_available(row, exception['request']['worker']) or
-                (task['status'] == 'running' and exception.get('consumed_generation') == task['generation'])):
-            task['fix_attempt_limit'] = max(FIX_ATTEMPT_LIMIT, exception['request']['attempt_number'])
+        task['fix_attempt_limit'] = self.attempt_limit(row)
+        task['fix_attempts_remaining'] = max(0, task['fix_attempt_limit'] - task['fix_attempts_used'])
+        task['attempt_allowance_active'] = self.allowance_active(row)
+        if task['attempt_allowance_active']:
+            # Assignment identity is host + monotonic reassignment index. A
+            # truthful accounting repair may change its lifetime baseline while
+            # the immutable grant request retains the original observed base.
+            task['attempt_allowance']['attempt_base'] = task['attempt_base']
         task['reassignment_limit'] = REASSIGNMENT_LIMIT
         task['execution_policy'] += (
             ' For external approval waits, finish with outcome pending_external_approval; never retry or resubmit approval requests automatically. '
             'Record approval_request with thread_id and question_id in pending receipts. On the actual human response, immediately run approve --receipt with its source message and every explicitly covered pending task/generation, even while another claim is active. Read back queued eligibility before saying resumed; approval is not test qualification. '
             'After a verified human approval response, the last owning worker may explicitly retry with approval_received=true, approval_evidence naming the response, and settled execution/external-state evidence. '
             'Artifact-location and verified nonhuman setup/dependency waits are scheduling waits; an administrator may correct a mistaken approval classification through defer with the supported audited wait_correction. Setup corrections require existing prerequisites and refuse any recorded human stop or approval request. '
-            f'Settled blocked tasks retry after 15 minutes on the current host until {FIX_ATTEMPT_LIMIT} fix attempts are used, then automatically reassign to another eligible host. '
+            f"Settled blocked tasks retry after 15 minutes on the current host until {task['fix_attempt_limit']} fix attempts are used, then automatically reassign to another eligible host. "
             'An actual claim by a different host resets fix_attempts_used to zero and consumes one of at most 6 lifetime host reassignments. '
             'Same-host retries do not reset the count; the initial assignment is not a reassignment. '
             'Read all prior receipts and inspect external state before any retry side effects; apply a concrete correction. '
             'Record fix_attempts_used for the current host assignment in receipts; preserve lifetime evidence in total_fix_attempts. '
             'This user policy supersedes older instructions that forbid resetting on host transfer.')
+        if task['attempt_allowance_active']:
+            task['execution_policy'] += (
+                f" Verified task/current-host allowance {task['attempt_allowance']['id']} sets this assignment's "
+                f"limit to {task['fix_attempt_limit']} with {task['fix_attempts_remaining']} attempts remaining. "
+                'Use these fresh API fields and exact task/host/assignment/grant bindings for admission; '
+                'the default twenty remains for other assignments. Attendance and consent remain separate.')
         if (task['task_type']=='publish' and task['status'] not in ('completed','cancelled')
                 and task['result'].get('release_target',{}).get('repository')=='oliverhu/nova-browser'):
             task['delivery_targets'] = ['macos_public_release','ios_app_store_connect_upload_only']
@@ -347,7 +365,7 @@ class Store:
         if task['status'] == 'blocked':
             # Automatic retries retain the assignment until its budget is used.
             # Explicit scheduling handoffs use defer and remain independently routed.
-            if task['attempts_host'] and task['fix_attempts_used'] < FIX_ATTEMPT_LIMIT:
+            if task['attempts_host'] and task['fix_attempts_used'] < self.attempt_limit(task):
                 return next((w['id'] for w in workers if w['id'] == task['attempts_host']), None)
             workers.sort(key=lambda w: (w['id'] == task['attempts_host'], w['last_claim'], w['id']))
             return workers[0]['id']
@@ -379,7 +397,27 @@ class Store:
     def assignment_allowed(self, task, worker):
         if task['attempts_host'] and task['attempts_host'] != worker:
             return task['reassignment_count'] < REASSIGNMENT_LIMIT
-        return task['fix_attempts_used'] < FIX_ATTEMPT_LIMIT or self.exception_available(task, worker)
+        return task['fix_attempts_used'] < self.attempt_limit(task)
+
+    @staticmethod
+    def allowance_active(task):
+        grant = json.loads(task['attempt_allowance'])
+        return bool(grant and grant.get('expired_at') is None
+                    and grant['worker'] == task['attempts_host']
+                    and grant['reassignment_count'] == task['reassignment_count']
+                    and task['generation'] >= grant['request']['generation'])
+
+    def host_attempt_limit(self, task):
+        grant = json.loads(task['attempt_allowance'])
+        return max(FIX_ATTEMPT_LIMIT, grant['effective_limit']) if self.allowance_active(task) else FIX_ATTEMPT_LIMIT
+
+    def attempt_limit(self, task):
+        limit = self.host_attempt_limit(task)
+        exception = json.loads(task['attempt_exception'])
+        if exception and (self.exception_available(task, exception['request']['worker']) or
+                (task['status'] == 'running' and exception.get('consumed_generation') == task['generation'])):
+            limit = max(limit, exception['request']['attempt_number'])
+        return limit
 
     @staticmethod
     def exception_available(task, worker):
@@ -410,7 +448,7 @@ class Store:
         if row['status'] == 'blocked':
             candidate = self.candidate(db, row)
             target = json.loads(row['requirements']).get('worker') or (
-                row['attempts_host'] if row['fix_attempts_used'] < FIX_ATTEMPT_LIMIT else candidate)
+                row['attempts_host'] if row['fix_attempts_used'] < self.attempt_limit(row) else candidate)
             pending = [dict(db.execute('SELECT id,title,status FROM tasks WHERE id=?', (dep,)).fetchone())
                        for dep in json.loads(row['dependencies'])]
             pending = [d for d in pending if d['status'] != 'completed']
@@ -419,7 +457,7 @@ class Store:
                 reason = 'Waiting for: ' + ', '.join(d['title'] for d in pending)
             if not reason and not candidate:
                 reason = 'Waiting for an available worker that meets requirements'
-            exhausted = row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT
+            exhausted = row['fix_attempts_used'] >= self.attempt_limit(row) and row['reassignment_count'] >= REASSIGNMENT_LIMIT
             return {**result, 'next_worker': None if exhausted else target,
                     'next_worker_label': 'Retry limits reached' if exhausted else target or 'Either available Mac',
                     'waiting_dependencies': pending, 'ready': not reason,
@@ -452,8 +490,8 @@ class Store:
         return result
 
     def retry_wait(self, row):
-        if row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
-            return f'{FIX_ATTEMPT_LIMIT} attempts on this assignment and {REASSIGNMENT_LIMIT} lifetime host reassignments exhausted'
+        if row['fix_attempts_used'] >= self.attempt_limit(row) and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
+            return f'{self.attempt_limit(row)} attempts on this assignment and {REASSIGNMENT_LIMIT} lifetime host reassignments exhausted'
         if json.loads(row['result']).get('execution_stopped') is not True:
             return 'Prior execution must be confirmed stopped before retry'
         if row['retry_after'] is None:
@@ -575,6 +613,7 @@ class Store:
                     self.event(db, worker, 'automatic-retry', row['id'], encoded({'previous_worker': row['last_owner'], 'fix_attempts_used': row['fix_attempts_used']}))
                 changed_host = bool(row['attempts_host'] and row['attempts_host'] != worker)
                 if changed_host:
+                    self.expire_attempt_allowance(db, row)
                     self.event(db, worker, 'host-reassigned', row['id'], encoded({'from':row['attempts_host'],'to':worker,
                         'reassignment_count':row['reassignment_count']+1,'previous_assignment_attempts':row['fix_attempts_used'],
                         'total_fix_attempts':row['total_fix_attempts']}))
@@ -649,9 +688,11 @@ class Store:
             # Canonical counts are per assignment; older receipt aliases are lifetime totals.
             reported = receipt.get('fix_attempts_used', max(0,reported_attempts(receipt)-row['attempt_base']))
             attempts = max(row['fix_attempts_used'], reported)
+            if self.allowance_active(row) and attempts > self.host_attempt_limit(row):
+                raise Invalid('Reported attempts exceed this verified host allowance')
             if outcome == 'blocked':
                 # A failed execution consumes at least one attempt, even on an older client.
-                attempts = max(attempts, min(FIX_ATTEMPT_LIMIT, row['fix_attempts_used'] + 1))
+                attempts = max(attempts, min(self.attempt_limit(row), row['fix_attempts_used'] + 1))
             kind = json.loads(row["steps"])[row["step"]]["kind"]
             next_step = row["step"] + (outcome == "completed")
             status = ("completed" if next_step == len(json.loads(row["steps"])) else "queued") if outcome == "completed" else outcome
@@ -697,14 +738,14 @@ class Store:
     def _correction_state(row):
         """Durable row snapshot without authentication or request fingerprints."""
         state = {k: row[k] for k in row.keys() if k not in ('claim_hash', 'request_hash')}
-        for field in ('requirements', 'dependencies', 'steps', 'result', 'attempt_exception'):
+        for field in ('requirements', 'dependencies', 'steps', 'result', 'attempt_exception', 'attempt_allowance'):
             state[field] = json.loads(state[field])
         return state
 
     @staticmethod
     def _correction_readback(row):
         return {**dict(row), **{k: json.loads(row[k]) for k in
-                ('request', 'prior_state', 'prior_receipt', 'corrected_state') if k in row.keys()}}
+                ('request', 'prior_state', 'prior_receipt', 'corrected_state', 'granted_state') if k in row.keys()}}
 
     def correct_outcome(self, actor, ident, body):
         """Reopen only a completed work step whose original result says blocked.
@@ -780,7 +821,7 @@ class Store:
         if actor != 'admin':
             raise Conflict('Attempt correction requires administrator identity')
         try:
-            request = correction_payload(body, WORKERS, FIX_ATTEMPT_LIMIT, REASSIGNMENT_LIMIT)
+            request = correction_payload(body, WORKERS, None, REASSIGNMENT_LIMIT)
         except ValueError as error:
             raise Invalid(str(error)) from None
         proofs = [request['owner_proof'], *request['historical_proof']]
@@ -806,7 +847,7 @@ class Store:
             exception = json.loads(row['attempt_exception'])
             consumed_extra = (row['fix_attempts_used'] == FIX_ATTEMPT_LIMIT + 1
                               and exception.get('consumed_generation') == row['generation'])
-            if used > FIX_ATTEMPT_LIMIT and not (consumed_extra and used == row['fix_attempts_used']):
+            if used > self.host_attempt_limit(row) and not (consumed_extra and used == row['fix_attempts_used']):
                 raise Invalid('Correction cannot grant an attempt above the existing host limit')
             def transfer_for(proof):
                 claims = db.execute("SELECT id,detail FROM events WHERE task_id=? AND actor=? AND kind='claimed'",
@@ -830,6 +871,12 @@ class Store:
                 if (transferred.get('from') != proof['worker']
                         or transferred.get('previous_assignment_attempts') != proof['recorded_attempts']):
                     raise Conflict('Historical recorded attempts do not match the actual host transfer')
+                prior_grant = db.execute('SELECT granted_state FROM attempt_allowances WHERE task_id=? AND worker=? AND reassignment_count=?',
+                    (ident, proof['worker'], transferred['reassignment_count'] - 1)).fetchone()
+                prior_limit = (json.loads(prior_grant['granted_state'])['attempt_allowance']['effective_limit']
+                               if prior_grant else FIX_ATTEMPT_LIMIT)
+                if proof['fix_attempts_used'] > prior_limit:
+                    raise Invalid('Historical attempts exceed that assignment\'s verified limit')
                 if transfer['id'] in accounted:
                     raise Conflict('Historical assignment has already been accounted for')
                 accounted.add(transfer['id'])
@@ -899,7 +946,7 @@ class Store:
                     raise Conflict('Response does not match the task approval question: '+row['id'])
                 if receipt.get('human_stop') is True:
                     raise Conflict('A recorded human stop requires separate explicit reconciliation: '+row['id'])
-                if row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
+                if row['fix_attempts_used'] >= self.attempt_limit(row) and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
                     raise Conflict('Retry limits exhausted: '+row['id'])
                 rows.append((row,entry))
             db.execute('INSERT INTO approvals VALUES(?,?,?,?)',(ident,actor,serialized,self.clock()))
@@ -954,6 +1001,8 @@ class Store:
                     raise Conflict('This task already has an immutable single-attempt exception')
                 return {'recorded': True, 'replayed': True, 'exception': prior,
                         'task': {**self.public_task(row), **self.scheduling(db, row)}}
+            if self.allowance_active(row):
+                raise Conflict('A finite host allowance cannot be stacked with a single-attempt exception')
             receipt = json.loads(row['result'])
             if (row['status'] != 'queued' or row['generation'] != body['generation']
                     or row['attempts_host'] != body['worker'] or row['fix_attempts_used'] != body['expected_used']
@@ -973,6 +1022,78 @@ class Store:
             row = db.execute('SELECT * FROM tasks WHERE id=?', (row['id'],)).fetchone()
             return {'recorded': True, 'replayed': False, 'exception': exception,
                     'task': {**self.public_task(row), **self.scheduling(db, row)}}
+
+    def apply_attempt_allowance(self, actor, body):
+        """Grant a finite, human-authorized budget on one existing assignment."""
+        if actor != 'admin':
+            raise Conflict('Attempt allowances require administrator identity')
+        try:
+            request = allowance_payload(body, WORKERS)
+        except ValueError as error:
+            raise Invalid(str(error)) from None
+        ident = request['task']
+        grant_id = hashlib.sha256(encoded(request).encode()).hexdigest()
+        source_key = hashlib.sha256(encoded(request['source']).encode()).hexdigest()
+        with self.transaction() as db:
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            if not row:
+                raise Conflict('Unknown task')
+            prior = db.execute('SELECT * FROM attempt_allowances WHERE source_key=? OR (task_id=? AND request_id=?)',
+                               (source_key, ident, request['request_id'])).fetchone()
+            if prior:
+                if prior['id'] != grant_id:
+                    raise Conflict('Human source/request already binds different allowance evidence')
+                return {'grant': self._correction_readback(prior), 'replayed': True,
+                        'task': {**self.public_task(row), **self.scheduling(db, row)}}
+            expected = request['expected']
+            public = self.public_task(row)
+            if (row['generation'] != request['generation']
+                    or any(row[k] != expected[k] for k in BINDING)
+                    or any(hashlib.sha256(encoded(public[k]).encode()).hexdigest() != expected[k + '_sha256']
+                           for k in ('requirements', 'attempt_allowance', 'attempt_exception'))):
+                raise Conflict('Task or assignment evidence changed; reload before granting')
+            receipt = json.loads(row['result'])
+            if (row['status'] != 'queued' or row['owner'] is not None
+                    or row['attempts_host'] != request['worker'] or row['last_owner'] != request['worker']
+                    or json.loads(row['requirements']).get('worker') != request['worker']
+                    or row['fix_attempts_used'] != FIX_ATTEMPT_LIMIT
+                    or row['total_fix_attempts'] != row['attempt_base'] + row['fix_attempts_used']
+                    or row['reassignment_count'] > REASSIGNMENT_LIMIT
+                    or receipt.get('execution_stopped') is not True or receipt.get('human_stop') is True):
+                raise Conflict('Grant requires settled hard-routed current-host work at its default limit')
+            if row['task_type'] != 'work' or any(s['kind'] != 'work' for s in json.loads(row['steps'])):
+                raise Conflict('Only ordinary work supports a current-host allowance')
+            if (self.allowance_active(row) or self.exception_available(row, request['worker'])
+                    or db.execute('SELECT 1 FROM attempt_allowances WHERE task_id=? AND worker=? AND reassignment_count=?',
+                                  (ident, request['worker'], row['reassignment_count'])).fetchone()):
+                raise Conflict('Only one finite allowance per assignment; no exception stacking')
+            now = self.clock()
+            grant = {'id': grant_id, 'request': request, 'worker': request['worker'],
+                     'reassignment_count': row['reassignment_count'], 'attempt_base': row['attempt_base'],
+                     'effective_limit': FIX_ATTEMPT_LIMIT + request['additional_attempts'],
+                     'granted_at': now, 'expired_at': None}
+            before = {k: row[k] for k in ('generation', *BINDING)}
+            db.execute('UPDATE tasks SET attempt_allowance=? WHERE id=?', (encoded(grant), ident))
+            after = {**before, 'attempt_allowance': grant}
+            db.execute('INSERT INTO attempt_allowances VALUES(?,?,?,?,?,?,?,?,?,?)',
+                       (grant_id, ident, request['worker'], row['reassignment_count'], source_key,
+                        request['request_id'], encoded(request), encoded(before), encoded(after), now))
+            self.event(db, actor, 'attempt-allowance-granted', ident, encoded({
+                'grant_id': grant_id, 'source': request['source'], 'worker': request['worker'],
+                'reassignment_count': row['reassignment_count'], 'attempt_base': row['attempt_base'],
+                'used': row['fix_attempts_used'], 'effective_limit': grant['effective_limit']}))
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            audit = db.execute('SELECT * FROM attempt_allowances WHERE id=?', (grant_id,)).fetchone()
+            return {'grant': self._correction_readback(audit), 'replayed': False,
+                    'task': {**self.public_task(row), **self.scheduling(db, row)}}
+
+    def expire_attempt_allowance(self, db, row):
+        if self.allowance_active(row):
+            grant = json.loads(row['attempt_allowance'])
+            grant['expired_at'] = self.clock()
+            db.execute('UPDATE tasks SET attempt_allowance=? WHERE id=?', (encoded(grant), row['id']))
+            self.event(db, 'service', 'attempt-allowance-expired', row['id'],
+                       encoded({'grant_id': grant['id'], 'reason': 'genuine host reassignment'}))
 
     def invalidate_attempt_exception(self, db, row):
         exception = json.loads(row['attempt_exception'])
@@ -1021,8 +1142,8 @@ class Store:
                     bounded(body.get('approval_evidence'), 'approval_evidence', 4000)
                 if action in ('retry', 'complete') and body.get('approval_received') is not True:
                     raise Invalid('External approval must be verified before resuming')
-            if action == 'retry' and row['fix_attempts_used'] >= FIX_ATTEMPT_LIMIT and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
-                raise Conflict(f'{FIX_ATTEMPT_LIMIT} attempts and {REASSIGNMENT_LIMIT} host reassignments exhausted')
+            if action == 'retry' and row['fix_attempts_used'] >= self.attempt_limit(row) and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
+                raise Conflict(f'{self.attempt_limit(row)} attempts and {REASSIGNMENT_LIMIT} host reassignments exhausted')
             if actor != "admin":
                 self.owned(db, actor, ident, body.get("claim_token"), body.get("generation"))
                 if action != "retry":
@@ -1140,7 +1261,7 @@ class Store:
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
                 "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
-                                "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1},
+                                "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1},
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 
@@ -1159,4 +1280,6 @@ class Store:
                 'SELECT * FROM outcome_corrections WHERE task_id=? ORDER BY at', (ident,))]
             task['attempt_corrections']=[self._correction_readback(r) for r in db.execute(
                 'SELECT * FROM attempt_corrections WHERE task_id=? ORDER BY at,rowid', (ident,))]
+            task['attempt_allowances']=[self._correction_readback(r) for r in db.execute(
+                'SELECT * FROM attempt_allowances WHERE task_id=? ORDER BY at,rowid', (ident,))]
             return task

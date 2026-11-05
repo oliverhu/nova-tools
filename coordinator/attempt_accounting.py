@@ -103,7 +103,9 @@ def correction_payload(body, workers, host_limit, reassignment_limit):
         require(proof['generation'] < body['generation'] and proof['generation'] not in generations,
                 'Historical generations must be earlier and unique')
         generations.add(proof['generation'])
-        require(proof['fix_attempts_used'] <= host_limit
+        # The store resolves historical grants against the actual closed
+        # assignment. Standalone callers retain their explicit default bound.
+        require((host_limit is None or proof['fix_attempts_used'] <= host_limit)
                 and proof['fix_attempts_used'] - proof['recorded_attempts'] == proof['omitted_attempts'],
                 'Historical actual/recorded/omitted counts must agree within the host limit')
         for key in ('receipt', 'source'):

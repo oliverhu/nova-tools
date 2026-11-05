@@ -18,6 +18,25 @@ class HeartbeatClient:
 
 
 class ClientTests(unittest.TestCase):
+    def test_allowance_cli_requires_matching_fresh_audit_without_claiming(self):
+        from coordinator.client import main
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'allowance.json'
+            body = {'task': '1234567890abcdef', 'request_id': 'exact-human-ten'}
+            path.write_text(json.dumps(body)); grant = {'id': 'a' * 64}
+            for matching in (True, False):
+                with patch('coordinator.client.Client') as constructor, patch('sys.stdout', new_callable=io.StringIO):
+                    client = constructor.return_value
+                    observed = {'attempt_allowances': [{'id': grant['id'], 'request': body}] if matching else []}
+                    client.request.side_effect = [{'grant': grant}, observed]
+                    with patch.object(sys, 'argv', ['nova-coord', 'attempt-allowance', '--receipt', str(path)]):
+                        if matching: main()
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, 'readback'): main()
+                    self.assertEqual([('/api/attempt-allowances/apply', body), ('/api/tasks/' + body['task'],)],
+                                     [call.args for call in client.request.call_args_list])
+                    client.claim.assert_not_called(); client.claim_body.assert_not_called()
+
     def test_finish_cli_omission_preserves_receipt_choice_and_admin_cli_does_not_claim(self):
         from coordinator.client import main
         with tempfile.TemporaryDirectory() as temporary:

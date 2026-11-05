@@ -111,6 +111,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            if path == '/api/attempt-allowances/apply':
+                if actor != 'admin':
+                    return self.respond(403,{'error':'Attempt allowances require administrator identity'})
+                return self.respond(200,store.apply_attempt_allowance(actor,body))
             if path == '/api/attempt-exceptions/apply':
                 if actor not in ('admin', *WORKERS):
                     return self.respond(403,{'error':'Authenticated approval actor required'})

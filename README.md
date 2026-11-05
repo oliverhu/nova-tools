@@ -159,6 +159,48 @@ replayed request cannot renew it. One task supports at most one such exception;
 it does not grant publication authority or a general policy override. Source
 rollout and feature acceptance remain separately recorded.
 
+## Finite current-host allowances
+
+For a separately verified human decision adding up to ten attempts to one
+settled ordinary task at its default twenty, an administrator uses
+`nova-coord --config /private/admin.json attempt-allowance --receipt
+/private/allowance.json` (`POST /api/attempt-allowances/apply`). This does not
+reset counters, change ownership/generation/status/dependencies, or authorize
+attendance, native interaction, publication or other hosts/tasks.
+
+The exact request fields are `request_id`, `task`, `generation`, `worker`,
+`source: {thread_id, message_id}`, the actual human `response`,
+`additional_attempts` (integer 1–10), `expected`, `decision_verified: true`,
+`execution_stopped: true`, `external_state_checked: true` and descriptive
+`evidence`. Independently verify the primary human message and explicit scope;
+the service never interprets arbitrary prose as approval. `expected` binds
+`status`, `owner`, `step`, `reassignment_count`, `attempts_host`,
+`fix_attempts_used`, `total_fix_attempts`, `attempt_base`, and three hashes:
+`requirements_sha256`, `attempt_allowance_sha256`, `attempt_exception_sha256`.
+Hash each corresponding fresh public JSON object with SHA-256 over sorted compact
+JSON. The task must be stopped, queued without an owner and hard-routed to its
+existing assignment host. Re-read these bindings immediately before applying.
+
+The service exposes `capabilities.attempt_allowances: 1`, effective
+`fix_attempt_limit`, `fix_attempts_remaining`, `attempt_allowance_active` and
+`attempt_allowance: {id, request, worker, reassignment_count, attempt_base,
+effective_limit, granted_at, expired_at}`. A grant of ten at used twenty reports
+limit thirty, remaining ten, without consuming an attempt at grant or claim.
+Failed-finish accounting consumes the slots normally. A caller must verify the
+fresh task/host/assignment/grant/generation/usage at prepare and run/admission;
+never substitute an unverified local maximum. For an active grant, its public
+`attempt_base` reflects current truthful accounting; the immutable request retains
+the originally observed base and generation. Same-host generations and separate
+attendance/approval cycles preserve this finite budget. A real host transfer
+expires it permanently, including if the original host later returns.
+
+Task detail exposes append-only `attempt_allowances` with request and before/after
+evidence. A primary human source cannot mint multiple grants or be retargeted;
+only one grant per host assignment is supported. Exact replay returns its original
+audit and current state without replenishment. Default twenty, the six-transfer
+cap and the legacy single-extra path remain unchanged; grants cannot stack with
+that exception. A fresh attendance response is still required where applicable.
+
 ## Correcting an erroneous completion
 
 For an erroneous final completion whose original receipt explicitly says

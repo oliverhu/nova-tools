@@ -130,6 +130,29 @@ class HTTPTests(unittest.TestCase):
         self.assertNotIn(claim['claim_token'].encode(), raw)
         self.assertNotIn(current['claim_token'].encode(), raw)
 
+    def test_admin_finite_attempt_allowance_is_scoped_and_freshly_read_back(self):
+        from test_attempt_allowances import VM1, VM2, prepared_task, allowance_request
+        for worker in (VM1, VM2): self.server.store.pulse(worker, {'capacity': {'cpus': 12}})
+        ident = prepared_task(self.server.store)
+        body = allowance_request(self.server.store, ident)
+        url = '/api/attempt-allowances/apply'
+        for actor in (None, 'oliver-mini', 'oliver-mac'):
+            self.assertEqual(403, self.request(url, actor, body)[0])
+        self.assertEqual(409, self.request(url, 'admin', {**body, 'generation': 99})[0])
+        code, raw, _ = self.request(url, 'admin', body)
+        self.assertEqual(200, code)
+        result = json.loads(raw); self.assertFalse(result['replayed'])
+        self.assertEqual((20, 30, 10), tuple(result['task'][k] for k in
+            ('fix_attempts_used', 'fix_attempt_limit', 'fix_attempts_remaining')))
+        _, raw, _ = self.request('/api/tasks/' + ident)
+        task = json.loads(raw)
+        self.assertEqual(result['grant'], task['attempt_allowances'][0])
+        self.assertTrue(task['attempt_allowance_active'])
+        self.assertNotIn('claim_token', raw.decode())
+        self.assertTrue(json.loads(self.request(url, 'admin', body)[1])['replayed'])
+        _, raw, _ = self.request('/api/state')
+        self.assertEqual(1, json.loads(raw)['capabilities']['attempt_allowances'])
+
     def test_attempt_accounting_correction_is_admin_only_and_preserves_live_claim(self):
         from coordinator.attempt_accounting import BINDING
         store = self.server.store
