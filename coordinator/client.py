@@ -15,6 +15,7 @@ import urllib.request
 import uuid
 import tempfile
 from .approvals import approval_payload, approval_id
+from .outcomes import FINISH_OUTCOMES, finish_outcome
 
 
 CONFIG=Path.home()/".config/nova-coordinator/client.json"
@@ -87,7 +88,8 @@ class Client:
             body["progress"]=progress
         return self.request(f"/api/tasks/{ident}/heartbeat",body)
 
-    def finish(self,ident,receipt,outcome="completed"):
+    def finish(self,ident,receipt,outcome=None):
+        outcome = finish_outcome(receipt, outcome)
         return self.request(f"/api/tasks/{ident}/finish",{**self.claim_body(ident),"receipt":receipt,"outcome":outcome})
 
     @staticmethod
@@ -254,11 +256,13 @@ def main():
     claim=sub.add_parser("next");claim.add_argument("--task")
     detail=sub.add_parser("show");detail.add_argument("task")
     beat=sub.add_parser("heartbeat");beat.add_argument("task");beat.add_argument("--progress")
-    done=sub.add_parser("finish");done.add_argument("task");done.add_argument("--receipt",type=Path,required=True);done.add_argument("--outcome",choices=["completed","blocked","failed","pending_external_approval"],default="completed")
+    done=sub.add_parser("finish");done.add_argument("task");done.add_argument("--receipt",type=Path,required=True);done.add_argument("--outcome",choices=FINISH_OUTCOMES,help="Defaults to the explicit receipt outcome, otherwise completed; contradictions are rejected")
     run=sub.add_parser("run");run.add_argument("task");run.add_argument("args",nargs=argparse.REMAINDER)
     publish=sub.add_parser("publish");publish.add_argument("task");publish.add_argument("--receipt",type=Path,required=True);publish.add_argument("--command",dest="publish_command",nargs=argparse.REMAINDER,required=True)
     permit=sub.add_parser("publish-permit");permit.add_argument("task",nargs="?",default=os.environ.get("NOVA_COORD_TASK_ID"))
     reconcile=sub.add_parser("reconcile");reconcile.add_argument("task");reconcile.add_argument("--file",type=Path,required=True)
+    correct=sub.add_parser("correct-outcome",help="Admin-only correction of an evidence-bound erroneous completion")
+    correct.add_argument("task");correct.add_argument("--receipt",type=Path,required=True)
     retry=sub.add_parser("retry");retry.add_argument("task");retry.add_argument("--receipt",type=Path,required=True)
     approve=sub.add_parser('approve',help='Apply one verified human decision to its explicitly covered pending tasks')
     approve.add_argument('--receipt',type=Path,required=True)
@@ -289,6 +293,7 @@ def main():
     elif args.command=="heartbeat":result=client.heartbeat(args.task,args.progress)
     elif args.command=="finish":result=client.finish(args.task,json.loads(args.receipt.read_text()),args.outcome)
     elif args.command=="reconcile":result=client.request(f"/api/tasks/{args.task}/reconcile",json.loads(args.file.read_text()))
+    elif args.command=="correct-outcome":result=client.request(f"/api/tasks/{args.task}/correct-outcome",json.loads(args.receipt.read_text()))
     elif args.command=="retry":
         receipt=json.loads(args.receipt.read_text())
         result=client.request(f"/api/tasks/{args.task}/retry", {**receipt, **client.claim_body(args.task)})

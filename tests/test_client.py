@@ -1,9 +1,13 @@
 import sys
 import time
 import unittest
+import io
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
-from coordinator.client import supervised,publish_permit,observe_main
+from coordinator.client import Client,supervised,publish_permit,observe_main
 
 
 class HeartbeatClient:
@@ -14,6 +18,35 @@ class HeartbeatClient:
 
 
 class ClientTests(unittest.TestCase):
+    def test_finish_cli_omission_preserves_receipt_choice_and_admin_cli_does_not_claim(self):
+        from coordinator.client import main
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'receipt.json'
+            path.write_text(json.dumps({'outcome': 'blocked', 'acceptance_complete': False}))
+            with patch('coordinator.client.Client') as constructor, patch('sys.stdout', new_callable=io.StringIO):
+                client = constructor.return_value
+                client.finish.return_value = {'status': 'blocked'}
+                with patch.object(sys, 'argv', ['nova-coord', 'finish', 'task', '--receipt', str(path)]): main()
+                self.assertEqual(None, client.finish.call_args.args[2])
+                client.request.return_value = {'task': {'status': 'blocked'}}
+                with patch.object(sys, 'argv', ['nova-coord', 'correct-outcome', 'task', '--receipt', str(path)]): main()
+                self.assertEqual('/api/tasks/task/correct-outcome', client.request.call_args.args[0])
+                client.claim.assert_not_called()
+
+    def test_finish_uses_explicit_receipt_outcome_and_rejects_mismatch_before_request(self):
+        client = Client.__new__(Client)
+        client.claim_body = lambda ident: {'generation': 3, 'step': 0, 'claim_token': 'private-test-token'}
+        with patch.object(client, 'request', return_value={'status': 'blocked'}) as request:
+            receipt = {'outcome': 'blocked', 'acceptance_complete': False}
+            client.finish('task', receipt)
+            self.assertEqual('blocked', request.call_args.args[1]['outcome'])
+            request.reset_mock()
+            for evidence, outcome in ((receipt, 'completed'), ({'acceptance_complete': False}, None)):
+                with self.assertRaises(ValueError): client.finish('task', evidence, outcome)
+            request.assert_not_called()
+            client.finish('task', {'summary': 'Legacy completion'})
+            self.assertEqual('completed', request.call_args.args[1]['outcome'])
+
     def test_supervisor_returns_command_exit_status(self):
         self.assertEqual(7,supervised(HeartbeatClient(),'test',[sys.executable,'-c','raise SystemExit(7)']))
 

@@ -146,9 +146,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(403,{"error":"Use a worker identity"})
                 result=store.pulse(actor,body) if path.endswith("pulse") else store.claim(actor,body.get("task_id"))
                 return self.respond(200,result)
-            match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})/(heartbeat|finish|reconcile|retry|defer)",path)
+            match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})/(heartbeat|finish|reconcile|retry|defer|correct-outcome)",path)
             if match:
                 ident,action=match.groups()
+                if action=='correct-outcome':
+                    if actor!='admin':
+                        return self.respond(403,{'error':'Outcome correction requires administrator identity'})
+                    return self.respond(200,store.correct_outcome(actor,ident,body))
                 if action=='defer' and actor=='admin':
                     return self.respond(200,store.defer(actor,ident,body))
                 if action=="reconcile":

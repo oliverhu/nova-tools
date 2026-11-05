@@ -5,8 +5,11 @@ import threading
 import unittest
 import urllib.request
 import urllib.error
+from unittest.mock import patch
+import hashlib
 from coordinator.server import Server
 from coordinator.store import Store
+from coordinator.store import encoded
 
 
 class HTTPTests(unittest.TestCase):
@@ -52,6 +55,41 @@ class HTTPTests(unittest.TestCase):
 
     def test_worker_cannot_reconcile(self):
         self.assertEqual(403,self.request("/api/tasks/1234567890abcdef/reconcile","oliver-mini",{})[0])
+
+    def test_finish_contradiction_rejected_and_outcome_correction_is_admin_only(self):
+        self.request('/api/worker/pulse', 'oliver-mini', {'capacity': {'cpus': 12}})
+        _, raw, _ = self.request('/api/tasks', 'admin', {'request_key': 'wrong-finish', 'title': 'Wrong finish'})
+        ident = json.loads(raw)['id']
+        _, raw, _ = self.request('/api/worker/claim', 'oliver-mini', {'task_id': ident})
+        claim = json.loads(raw)
+        body = {'generation': 1, 'step': 0, 'claim_token': claim['claim_token'], 'outcome': 'completed',
+                'receipt': {'summary': 'Acceptance incomplete', 'outcome': 'blocked', 'acceptance_complete': False,
+                            'execution_stopped': True, 'external_state_checked': True, 'fix_attempts_used': 17}}
+        finish = '/api/tasks/' + ident + '/finish'
+        self.assertEqual(400, self.request(finish, 'oliver-mini', body)[0])
+        self.assertEqual('running', self.server.store.detail(ident)['status'])
+        with patch('coordinator.store.finish_outcome', return_value='completed'):
+            self.assertEqual(200, self.request(finish, 'oliver-mini', body)[0])
+        detail = self.server.store.detail(ident)
+        digest = lambda value: hashlib.sha256(encoded(value).encode()).hexdigest()
+        correction = {'generation': 1, 'expected_status': 'completed', 'expected_step': 1,
+                      'expected_result_sha256': digest(detail['result']),
+                      'expected_receipt_sha256': digest(detail['receipts'][-1]['receipt']), 'outcome': 'blocked',
+                      'execution_stopped': True, 'external_state_checked': True,
+                      'evidence': 'Verified original receipt and erroneous completed envelope'}
+        url = '/api/tasks/' + ident + '/correct-outcome'
+        for actor in (None, 'oliver-mac', 'oliver-mini'):
+            self.assertEqual(403, self.request(url, actor, correction)[0])
+        code, raw, _ = self.request(url, 'admin', correction)
+        self.assertEqual(200, code)
+        result = json.loads(raw)
+        self.assertEqual(('blocked', 0, 17), (result['task']['status'], result['task']['step'], result['task']['fix_attempts_used']))
+        self.assertEqual(detail['receipts'][-1]['receipt'], result['correction']['prior_receipt'])
+        _, raw, _ = self.request(url, 'admin', correction)
+        self.assertTrue(json.loads(raw)['replayed'])
+        _, raw, _ = self.request('/api/tasks/' + ident)
+        self.assertEqual(1, len(json.loads(raw)['outcome_corrections']))
+        self.assertEqual(409, self.request('/api/tasks/' + ident + '/heartbeat', 'oliver-mini', body)[0])
 
     def test_bounded_attempt_exception_authenticated_and_single_use_over_http(self):
         self.request('/api/worker/pulse', 'oliver-mini', {'capacity': {'cpus': 12}})

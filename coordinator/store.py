@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from .approvals import approval_payload, approval_id
 from .workers import WORKERS
+from .outcomes import finish_outcome
 
 
 class Conflict(Exception):
@@ -76,6 +77,11 @@ CREATE TABLE IF NOT EXISTS repositories (
 CREATE INDEX IF NOT EXISTS task_queue ON tasks(status,priority,created);
 CREATE TABLE IF NOT EXISTS approvals (
  id TEXT PRIMARY KEY, actor TEXT NOT NULL, payload TEXT NOT NULL, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS outcome_corrections (
+ id TEXT PRIMARY KEY, task_id TEXT NOT NULL, generation INTEGER NOT NULL,
+ actor TEXT NOT NULL, request TEXT NOT NULL, prior_state TEXT NOT NULL,
+ prior_receipt TEXT NOT NULL, corrected_state TEXT NOT NULL, at REAL NOT NULL,
+ UNIQUE(task_id,generation));
 """
 
 
@@ -614,9 +620,10 @@ class Store:
         bounded(receipt.get("summary"), "receipt summary", 12000)
         if receipt.get("execution_stopped") is not True:
             raise Invalid("Confirm execution_stopped after all owned operations settle")
-        outcome = body.get("outcome", "completed")
-        if outcome not in ("completed", "blocked", "failed", "pending_external_approval"):
-            raise Invalid("Invalid outcome")
+        try:
+            outcome = finish_outcome(receipt, body.get("outcome"))
+        except ValueError as error:
+            raise Invalid(str(error)) from None
         with self.transaction() as db:
             self.expire(db)
             row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"))
@@ -679,6 +686,88 @@ class Store:
         with self.connection() as db:
             self.owned(db, worker, ident, body.get("claim_token"), body.get("generation"))
         return self.reconcile(worker, ident, {**body, "action": "retry"})
+
+    @staticmethod
+    def _correction_state(row):
+        """Durable row snapshot without authentication or request fingerprints."""
+        state = {k: row[k] for k in row.keys() if k not in ('claim_hash', 'request_hash')}
+        for field in ('requirements', 'dependencies', 'steps', 'result', 'attempt_exception'):
+            state[field] = json.loads(state[field])
+        return state
+
+    @staticmethod
+    def _correction_readback(row):
+        return {**dict(row), **{k: json.loads(row[k]) for k in
+                ('request', 'prior_state', 'prior_receipt', 'corrected_state')}}
+
+    def correct_outcome(self, actor, ident, body):
+        """Reopen only a completed work step whose original result says blocked.
+
+        This is an accounting correction, not another finish, attempt or retry.
+        Original receipts/events/result stay untouched, and old claims are fenced.
+        """
+        if actor != 'admin':
+            raise Conflict('Outcome correction requires administrator identity')
+        fields = {'generation', 'expected_status', 'expected_step', 'expected_result_sha256',
+                  'expected_receipt_sha256', 'outcome', 'execution_stopped',
+                  'external_state_checked', 'evidence'}
+        if not isinstance(body, dict) or set(body) != fields:
+            raise Invalid('Exact bounded outcome-correction fields required')
+        if (body['expected_status'] != 'completed' or body['outcome'] != 'blocked'
+                or type(body['generation']) is not int or body['generation'] < 1
+                or type(body['expected_step']) is not int or body['expected_step'] < 1):
+            raise Invalid('Only an exact completed-to-blocked correction is supported')
+        if any(body[k] is not True for k in ('execution_stopped', 'external_state_checked')):
+            raise Invalid('Outcome correction requires stopped execution and checked external state')
+        for key in ('expected_result_sha256', 'expected_receipt_sha256'):
+            if not isinstance(body[key], str) or not re.fullmatch('[0-9a-f]{64}', body[key]):
+                raise Invalid('Exact canonical JSON SHA-256 required: ' + key)
+        request = {**body, 'evidence': bounded(body['evidence'], 'evidence', 6000)}
+        correction_id = hashlib.sha256(encoded({'task': ident, 'request': request}).encode()).hexdigest()
+        with self.transaction() as db:
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            if not row or row['generation'] != request['generation']:
+                raise Conflict('Task generation changed; reload before correcting its outcome')
+            prior = db.execute('SELECT * FROM outcome_corrections WHERE task_id=? AND generation=?',
+                               (ident, row['generation'])).fetchone()
+            if prior:
+                if prior['id'] != correction_id or self._correction_state(row) != json.loads(prior['corrected_state']):
+                    raise Conflict('Outcome already corrected or current state changed; inspect its audit')
+                return {'task': self.public_task(row), 'correction': self._correction_readback(prior), 'replayed': True}
+            steps = json.loads(row['steps'])
+            if row['status'] != 'completed' or row['step'] != request['expected_step'] or row['step'] != len(steps):
+                raise Conflict('Exact current completed final step required')
+            result = json.loads(row['result'])
+            side_effect_fields = {'publication_ref', 'published_commit', 'release_commit', 'release_target', 'ios_upload', 'merge'}
+            if row['task_type'] != 'work' or any(s['kind'] != 'work' for s in steps) or side_effect_fields.intersection(result):
+                raise Conflict('Publish, engine or repository side-effect corrections are unsupported')
+            previous = db.execute('SELECT receipt FROM receipts WHERE task_id=? AND generation=? AND step=?',
+                                  (ident, row['generation'], row['step'] - 1)).fetchone()
+            envelope = json.loads(previous['receipt']) if previous else None
+            if (not envelope or envelope.get('outcome') != 'completed' or envelope.get('receipt') != result
+                    or result.get('outcome') != 'blocked' or result.get('acceptance_complete') is not False
+                    or result.get('execution_stopped') is not True or result.get('external_state_checked') is not True):
+                raise Conflict('Original completed receipt must explicitly prove blocked, incomplete, stopped and checked work')
+            for value, key in ((result, 'expected_result_sha256'), (envelope, 'expected_receipt_sha256')):
+                if hashlib.sha256(encoded(value).encode()).hexdigest() != request[key]:
+                    raise Conflict('Original completion evidence changed; reload exact hashes')
+            if db.execute('SELECT 1 FROM locks WHERE task_id=?', (ident,)).fetchone():
+                raise Conflict('Unexpected retained task resource; explicit disposition required')
+            before = self._correction_state(row)
+            db.execute("UPDATE tasks SET status='blocked',step=step-1,last_owner=COALESCE(owner,last_owner),"
+                       "owner=NULL,claim_hash=NULL,lease_until=NULL,retry_after=NULL,updated=? WHERE id=?",
+                       (self.clock(), ident))
+            current = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
+            db.execute('INSERT INTO outcome_corrections VALUES(?,?,?,?,?,?,?,?,?)',
+                       (correction_id, ident, row['generation'], actor, encoded(request), encoded(before),
+                        encoded(envelope), encoded(self._correction_state(current)), self.clock()))
+            self.event(db, actor, 'outcome-corrected', ident, encoded({
+                'correction_id': correction_id, 'generation': row['generation'],
+                'previous_status': 'completed', 'status': 'blocked',
+                'previous_step': row['step'], 'step': current['step'],
+                'evidence': request['evidence']}))
+            audit = db.execute('SELECT * FROM outcome_corrections WHERE id=?', (correction_id,)).fetchone()
+            return {'task': self.public_task(current), 'correction': self._correction_readback(audit), 'replayed': False}
 
     def _approval_readback(self, db, row):
         payload = json.loads(row['payload'])
@@ -968,7 +1057,8 @@ class Store:
                 if t["status"]=="queued":
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
-                "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only"},
+                "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
+                                "outcome_correction":1,"finish_outcome_consistency":1},
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 
@@ -983,4 +1073,6 @@ class Store:
             task['approval'] = self.approval_state(db,row)
             task["receipts"]=[{**dict(r),"receipt":json.loads(r["receipt"])} for r in db.execute("SELECT * FROM receipts WHERE task_id=? ORDER BY at",(ident,))]
             task["events"]=[dict(r) for r in db.execute("SELECT * FROM events WHERE task_id=? ORDER BY id",(ident,))]
+            task['outcome_corrections']=[self._correction_readback(r) for r in db.execute(
+                'SELECT * FROM outcome_corrections WHERE task_id=? ORDER BY at', (ident,))]
             return task

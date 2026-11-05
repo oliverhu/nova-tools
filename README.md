@@ -115,8 +115,13 @@ completion without retesting. The owning worker submits `finish` when directed
 through its existing claim; never transfer tokens or manufacture a blocked state
 for administrator closure. Confirm the service readback before calling it completed.
 
-Completion receipts require a summary and `execution_stopped: true`. Ordinary
-workers record merged source/evidence and use non-force pushes, resolving main
+Completion receipts require a summary and `execution_stopped: true`.
+`finish` uses an explicit receipt `outcome` when `--outcome` is omitted, retaining
+the legacy `completed` default only when the receipt declares no outcome.
+Client and service reject conflicting outcomes and refuse completion when
+`acceptance_complete` is explicitly false, including requests from older clients.
+
+Ordinary workers record merged source/evidence and use non-force pushes, resolving main
 movement and rerunning affected checks. Use `--outcome blocked` or `failed` for
 incomplete work. Those outcomes free the worker for other tasks. To retry the
 same task, its owner supplies verified evidence:
@@ -153,6 +158,34 @@ capacity, human stops and normal claim fencing still apply. A failed attempt or
 replayed request cannot renew it. One task supports at most one such exception;
 it does not grant publication authority or a general policy override. Source
 rollout and feature acceptance remain separately recorded.
+
+## Correcting an erroneous completion
+
+For an erroneous final completion whose original receipt explicitly says
+`outcome: blocked`, `acceptance_complete: false`, `execution_stopped: true` and
+`external_state_checked: true`, an administrator can run:
+
+```sh
+nova-coord --config /private/admin.json correct-outcome TASK_ID --receipt /private/correction.json
+```
+
+The correction JSON has exactly `generation`, `expected_status: "completed"`,
+`expected_step`, `expected_result_sha256`, `expected_receipt_sha256`,
+`outcome: "blocked"`, `execution_stopped: true`, `external_state_checked: true`
+and descriptive `evidence`. Hash the current result and completed receipt envelope
+with SHA-256 over `json.dumps(value, sort_keys=True, separators=(',', ':')).encode()`.
+The service checks that exact final work step and original contradiction. It
+refuses running/stale tasks, publisher/engine tasks and publication or repository
+side effects. It restores the preceding step, fences the old claim and disables
+automatic retry. Generation, result, original receipts/events, dependencies,
+requirements and all attempt/reassignment counts remain unchanged.
+
+A separate append-only correction record retains the full prior state, original
+completed envelope, request and corrected state. Task detail exposes it as
+`outcome_corrections`; the event references its immutable ID. An identical retry
+is idempotent while the corrected state is unchanged. This operation neither
+qualifies acceptance nor resumes execution; later scheduling uses the existing
+supported workflow.
 
 ## Hourly publish tasks
 
