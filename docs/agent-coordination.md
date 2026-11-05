@@ -152,6 +152,16 @@ The source of truth is the current user-authorized workflow in `nova-tools/main`
 `skill/SKILL.md` installs as `nova-coordination/SKILL.md`, and the complete
 `skills/mac-vm-setup/` directory installs as `mac-vm-setup/`.
 
+The browser repository's `NOVA_CHAT_ROLES.md` and `AGENTS.md` ownership guidance
+are also managed instructions. Coordinator synchronizes them from a verified
+`nova-browser/main` commit to the canonical Studio/VM projects, preserving local
+differences and recording destination hashes. Keep their source revision separate
+from the tools/skill revision. Coordinator, developers and Dispatcher reread the
+changed role documents as well as the installed skill and confirm adoption at a
+safe boundary. Older task checkouts load the current canonical policy and carry
+the documentation change through normal integration when safe; do not rewrite
+frozen artifacts or interrupt active claims to update instructions.
+
 After policy changes land, new enrollment/reconnection, or a client upgrade:
 
 1. Resolve the approved source commit in a separate clean checkout or verified

@@ -43,9 +43,20 @@ replacement, verify installed file SHA-256 values, and keep a private per-host
 receipt with source commit, paths and verification time. Never copy credentials,
 claims or OS permission state as part of skill synchronization.
 
+Also maintain the browser repository's `NOVA_CHAT_ROLES.md` and `AGENTS.md`
+ownership guidance on Studio and both VMs from a verified `nova-browser/main`
+commit. Keep these consistent with the current developer-owned acceptance/main
+merge process and Coordinator's administrative role. Track browser-document and
+tools-skill source commits and destination hashes separately. Preserve local
+differences before replacement; do not update unrelated source or frozen task
+artifacts. Older task checkouts may retain historical instructions: have their
+owners load the current canonical project policy at a safe boundary and carry
+the documentation change through normal integration when safe.
+
 After an update, tell every active developer and Dispatcher to reread their
-installed coordination skill at the next safe boundary while preserving current
-work and claims. Track their readback of the source commit/coordination hash;
+installed coordination skill and changed role documents at the next safe boundary
+while preserving current work and claims. Coordinator also rereads the update.
+Track each actor's readback of the applicable source commits/content hashes;
 delivered messages alone do not prove the instructions were loaded. Coordinator
 keeps the expected revision and current routes in private operational state.
 This is instruction maintenance, not additional validation of developer results.
