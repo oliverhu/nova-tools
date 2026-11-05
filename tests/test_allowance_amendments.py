@@ -113,7 +113,7 @@ class AllowanceAmendmentTests(unittest.TestCase):
             with self.assertRaises(Conflict): self.store.amend_attempt_allowance(actor, body)
         variants = [{**body, k: v} for k, v in (
             ('generation', 99), ('generation', True), ('worker', VM2), ('previous_grant_id', 'b' * 64),
-            ('additional_attempts', 11), ('additional_attempts', True), ('additional_attempts', 0),
+            ('additional_attempts', 51), ('additional_attempts', True), ('additional_attempts', 0),
             ('decision_verified', False), ('execution_stopped', False), ('external_state_checked', False),
             ('unsettled_operations', ['active-native-input']), ('unsettled_operations', None),
             ('settlement_receipt', {'path': 'relative', 'sha256': 'a' * 64}),
@@ -137,6 +137,47 @@ class AllowanceAmendmentTests(unittest.TestCase):
         stale_initial_source = amendment_request(self.store, ident, 'reuse-initial')
         stale_initial_source['source'] = original['grant']['request']['source']
         with self.assertRaises(Conflict): self.store.amend_attempt_allowance('admin', stale_initial_source)
+
+    def test_fifty_more_preserves_exhausted_assignment_and_replay_does_not_refill(self):
+        claim, original = self.running(); ident = claim['task']['id']
+        fixtures.finish(self.store, claim, 'blocked', 30, acceptance_complete=False)
+        before = self.store.detail(ident); raw = self.raw(ident)
+        body = amendment_request(self.store, ident, 'human-fifty')
+        body.update(additional_attempts=50, response='Assign another 50 attempts')
+        result = self.store.amend_attempt_allowance('admin', body)
+        after = self.store.detail(ident)
+        self.assertEqual(('blocked', VM1, 30, 30, 0, 80, 50), tuple(after[k] for k in
+            ('status', 'owner', 'fix_attempts_used', 'total_fix_attempts',
+             'attempt_base', 'fix_attempt_limit', 'fix_attempts_remaining')))
+        self.assertEqual(['attempt_allowance'], [k for k in raw if raw[k] != self.raw(ident)[k]])
+        self.assertEqual(before['dependencies'], after['dependencies'])
+        self.assertEqual(before['result'], after['result'])
+        self.assertEqual(before['receipts'], after['receipts'])
+        self.assertEqual(before['events'], after['events'][:-1])
+        self.assertEqual(original['grant']['id'], after['attempt_allowance']['previous_grant_id'])
+        self.assertEqual(result['grant']['request'], body)
+        self.assertTrue(self.store.amend_attempt_allowance('admin', body)['replayed'])
+        self.assertEqual(after, self.store.detail(ident))
+        duplicate = amendment_request(self.store, ident, 'same-human-new-request')
+        duplicate.update(additional_attempts=50, source=body['source'])
+        with self.assertRaises(Conflict): self.store.amend_attempt_allowance('admin', duplicate)
+        self.assertEqual(after, self.store.detail(ident))
+
+    def test_fifty_is_amendment_only_and_invalid_bounds_never_mutate(self):
+        ident = fixtures.prepared_task(self.store)
+        before = self.store.detail(ident)
+        initial = fixtures.allowance_request(self.store, ident)
+        for amount in (11, 50):
+            with self.subTest(initial_amount=amount), self.assertRaises(Invalid):
+                self.store.apply_attempt_allowance('admin', {**initial, 'additional_attempts': amount})
+            self.assertEqual(before, self.store.detail(ident))
+        self.store.apply_attempt_allowance('admin', initial)
+        before = self.store.detail(ident)
+        amendment = amendment_request(self.store, ident, 'human-fifty')
+        for amount in (51, 0, -1, True, 50.0, '50'):
+            with self.subTest(amendment_amount=amount), self.assertRaises(Invalid):
+                self.store.amend_attempt_allowance('admin', {**amendment, 'additional_attempts': amount})
+            self.assertEqual(before, self.store.detail(ident))
 
     def test_same_host_approval_cycles_preserve_latest_authority_and_forty_cap(self):
         claim, _ = self.running(); ident = claim['task']['id']
