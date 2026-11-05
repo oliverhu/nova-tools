@@ -128,6 +128,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/releases/start':
                 if actor != 'admin':
                     return self.respond(403, {'error':'Explicit release requests require administrator identity'})
+                if body.get('scope') == 'ios_upload_only':
+                    from .ios_release import start
+                    return self.respond(200, start(store, body))
+                if body.get('scope') not in (None, 'combined'):
+                    raise Invalid('Unsupported release scope')
                 repository=body.get('repository')
                 if not isinstance(repository,str) or not repository.strip():
                     raise Invalid('repository is required')

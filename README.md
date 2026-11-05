@@ -464,6 +464,25 @@ An explicit user release request can start immediately through authenticated
 observation and shares hourly exact-commit deduplication; it does not replay
 blocked releases of the same commit. New explicit releases have priority 90.
 
+An explicit **iOS upload-only** request uses the same administrator endpoint with
+`scope: "ios_upload_only"`, `repository: "oliverhu/nova-browser"`, the exact
+40-character `commit`, existing prerequisite task IDs in `dependencies`, and
+`authorization: {"thread_id": "primary-human-chat", "message_id": "human-request"}`.
+The target must match a fresh remote-main observation. This creates a normal
+Studio-only `publish` claim, separately deduplicated by repository/commit/scope;
+`task_ids` returns its ID on both creation and replay. Request bindings remain
+immutable. Existing exact-target running claims, human holds and uncertain upload
+outcomes must be reconciled first. This does not rewrite old release tasks or
+alter the hourly combined-release timer.
+
+The publisher uses the existing Xcode upload pipeline and retained immutable
+iOS version/build/archive/journal. Completion requires `publication_ref`,
+`external_state_checked: true`, and the exact-source `ios_upload` receipt above,
+also recording `testflight_settings_changed: false` and `ios_public_release: false`.
+Omit `published_commit` and `release_commit`: an iOS-only completion never updates
+the Mac published baseline. Apple upload acceptance is separate from processing,
+tester availability and physical-device feature acceptance.
+
 ## External approval and technical retries
 
 `pending_external_approval` is displayed as **Pending External Approval** in its
