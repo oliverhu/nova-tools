@@ -248,7 +248,11 @@ class Store:
                 f"limit to {task['fix_attempt_limit']} with {task['fix_attempts_remaining']} attempts remaining. "
                 'Use these fresh API fields and exact task/host/assignment/grant bindings for admission; '
                 'the default twenty remains for other assignments. Attendance and consent remain separate.')
-        if (task['task_type']=='publish' and task['status'] not in ('completed','cancelled')
+        if task['task_type']=='publish' and task['result'].get('release_scope')=='ios_upload_only':
+            from .ios_release import POLICY, TARGET
+            task['delivery_targets'] = [TARGET]
+            task['execution_policy'] += ' ' + POLICY
+        elif (task['task_type']=='publish' and task['status'] not in ('completed','cancelled')
                 and task['result'].get('release_target',{}).get('repository')=='oliverhu/nova-browser'):
             task['delivery_targets'] = ['macos_public_release','ios_app_store_connect_upload_only']
             task['execution_policy'] += ' ' + IOS_UPLOAD_POLICY
@@ -681,6 +685,12 @@ class Store:
             target = json.loads(row["result"]).get("release_target")
             if target:
                 receipt = {**receipt, "release_target": target}
+            ios_only = json.loads(row['result']).get('release_scope') == 'ios_upload_only'
+            receipt = {key: value for key, value in receipt.items()
+                       if key not in ('release_scope', 'release_authorization')}
+            if ios_only:
+                receipt = {**receipt, 'release_scope': 'ios_upload_only',
+                           'release_authorization': json.loads(row['result'])['release_authorization']}
             previous = db.execute("SELECT receipt FROM receipts WHERE task_id=? AND generation=? AND step=?",
                                   (ident,row["generation"],body.get("step"))).fetchone()
             if previous:
@@ -705,7 +715,10 @@ class Store:
             if kind == "publish" and outcome == "completed":
                 bounded(receipt.get("publication_ref"), "publication_ref", 2000)
                 target = json.loads(row["result"]).get("release_target")
-                if target:
+                if ios_only:
+                    from .ios_release import validate_upload
+                    validate_upload(receipt, target)
+                elif target:
                     if receipt.get("published_commit") != target["commit"]:
                         raise Invalid("published_commit must match this publish task's exact release target")
                     if target['repository']=='oliverhu/nova-browser':
@@ -1342,7 +1355,7 @@ class Store:
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
                 "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
                                 "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1,
-                                "attempt_allowance_amendments":1},
+                                "attempt_allowance_amendments":1,"ios_upload_only_releases":1},
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 

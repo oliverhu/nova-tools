@@ -373,6 +373,44 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(403,self.request('/api/repositories/observe',body=observation)[0])
         self.assertEqual(200,self.request('/api/repositories/observe','oliver-mini',observation)[0])
 
+    def test_ios_only_route_requires_admin_preserves_mac_baseline_and_finishes_under_own_claim(self):
+        import time
+        from coordinator.ios_release import STUDIO, NOVA
+        self.tokens[STUDIO] = 's' * 40
+        self.request('/api/repositories/configure', 'admin', {'repository': NOVA, 'published_commit': 'a' * 40})
+        self.request('/api/repositories/observe', STUDIO, {'repository': NOVA, 'commit': 'b' * 40, 'observed_at': time.time()})
+        _, raw, _ = self.request('/api/tasks', 'admin', {'request_key': 'voice-ios', 'title': 'Voice'})
+        dep = json.loads(raw)['id']
+        body = {'scope': 'ios_upload_only', 'repository': NOVA, 'commit': 'b' * 40,
+                'dependencies': [dep], 'authorization': {'thread_id': 'primary', 'message_id': 'actual-upload'}}
+        for actor in (None, 'oliver-mini', STUDIO):
+            self.assertEqual(403, self.request('/api/releases/start', actor, body)[0])
+        self.assertEqual(400, self.request('/api/releases/start', 'admin', {**body, 'scope': 'ios_typo'})[0])
+        baseline = self.server.store.snapshot()['repositories']
+        code, raw, _ = self.request('/api/releases/start', 'admin', body)
+        self.assertEqual(200, code); ident = json.loads(raw)['created_ids'][0]
+        self.assertEqual(baseline, self.server.store.snapshot()['repositories'])
+        self.request('/api/worker/pulse', STUDIO, {'capacity': {'cpus': 12}})
+        _, raw, _ = self.request('/api/worker/claim', STUDIO, {'task_id': dep})
+        claim = json.loads(raw)
+        self.request('/api/tasks/' + dep + '/finish', STUDIO, {
+            'generation': 1, 'step': 0, 'claim_token': claim['claim_token'], 'outcome': 'completed',
+            'receipt': {'summary': 'Voice merged under revised acceptance', 'execution_stopped': True}})
+        _, raw, _ = self.request('/api/worker/claim', STUDIO, {'task_id': ident}); claim = json.loads(raw)
+        finish = {'generation': 1, 'step': 0, 'claim_token': claim['claim_token'], 'outcome': 'completed',
+            'receipt': {'summary': 'Actual Apple upload accepted', 'execution_stopped': True,
+                'external_state_checked': True, 'publication_ref': 'apple-upload-receipt',
+                'ios_upload': {'status': 'uploaded', 'source_commit': 'b' * 40, 'version': '0.2.2',
+                    'build_number': '52', 'upload_ref': 'apple-upload-receipt', 'testflight_distributed': False,
+                    'submitted_for_review': False, 'testflight_settings_changed': False, 'ios_public_release': False}}}
+        self.assertEqual(403, self.request('/api/tasks/' + ident + '/finish', 'admin', finish)[0])
+        self.assertEqual(409, self.request('/api/tasks/' + ident + '/finish', 'oliver-mini', finish)[0])
+        code, raw, _ = self.request('/api/tasks/' + ident + '/finish', STUDIO, finish)
+        self.assertEqual(200, code); self.assertEqual('completed', json.loads(raw)['status'])
+        self.assertEqual(baseline, self.server.store.snapshot()['repositories'])
+        _, raw, _ = self.request('/api/releases/start', 'admin', body)
+        self.assertEqual([ident], json.loads(raw)['task_ids']); self.assertTrue(json.loads(raw)['replayed'])
+
 
     def test_studio_worker_authentication_and_admin_only_retirement(self):
         studio = "oliverhu-mac-studio"
