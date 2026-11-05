@@ -1137,7 +1137,7 @@ class Store:
                     or row['fix_attempts_used'] > previous['effective_limit']
                     or row['reassignment_count'] > REASSIGNMENT_LIMIT
                     or receipt.get('human_stop') is True
-                    or (row['status'] == 'queued' and receipt.get('execution_stopped') is not True)):
+                    or (row['status'] != 'running' and receipt.get('execution_stopped') is not True)):
                 raise Conflict('Amend only the exact active host grant with verified quiet execution')
             if row['task_type'] != 'work' or any(s['kind'] != 'work' for s in json.loads(row['steps'])):
                 raise Conflict('Only ordinary work supports allowance amendment')

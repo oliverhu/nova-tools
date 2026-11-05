@@ -36,8 +36,9 @@ def allowance_payload(body, workers, amendment=False):
     require(isinstance(expected, dict) and set(expected) == expected_fields, 'Exact expected task/assignment binding required')
     if amendment:
         require((expected['status'] == 'running' and expected['owner'] == body['worker'])
-                or (expected['status'] == 'queued' and expected['owner'] is None),
-                'Amendment requires this owner\'s quiet running or settled queued task')
+                or (expected['status'] == 'queued' and expected['owner'] is None)
+                or (expected['status'] in ('failed', 'blocked') and expected['owner'] in (None, body['worker'])),
+                'Amendment requires this assignment\'s quiet running or settled queued/failed/blocked task')
         integer(expected['fix_attempt_limit'], 'expected.fix_attempt_limit', 21)
         require(isinstance(body['previous_grant_id'], str) and re.fullmatch('[0-9a-f]{64}', body['previous_grant_id']),
                 'Exact current grant ID required')

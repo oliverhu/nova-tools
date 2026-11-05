@@ -191,6 +191,31 @@ class AllowanceAmendmentTests(unittest.TestCase):
         self.store.heartbeat(VM1, ident, fixtures.claim_identity(claim))
         self.assertEqual(40, self.store.amend_attempt_allowance('admin', amendment_request(self.store, ident))['task']['fix_attempt_limit'])
 
+    def assert_settled_amendment_preserves_outcome(self, outcome):
+        claim, _ = self.running(); ident = claim['task']['id']
+        fixtures.finish(self.store, claim, outcome, 25, acceptance_complete=False,
+                        operator_observation_pending=True)
+        before = self.store.detail(ident); raw = self.raw(ident)
+        result = self.store.amend_attempt_allowance('admin', amendment_request(self.store, ident))
+        after = self.store.detail(ident)
+        self.assertEqual(['attempt_allowance'], [k for k in raw if raw[k] != self.raw(ident)[k]])
+        self.assertEqual((outcome, VM1, claim['task']['generation'], 25, 25, 40, 15),
+                         tuple(after[k] for k in ('status', 'owner', 'generation', 'fix_attempts_used',
+                                                  'total_fix_attempts', 'fix_attempt_limit', 'fix_attempts_remaining')))
+        self.assertEqual(before['result'], after['result']); self.assertEqual(before['approval'], after['approval'])
+        self.assertEqual(before['receipts'], after['receipts']); self.assertEqual(before['events'], after['events'][:-1])
+        self.assertEqual(before['ready'], after['ready']); self.assertEqual(before['waiting_reason'], after['waiting_reason'])
+        self.assertFalse(after['result']['acceptance_complete'])
+        self.assertTrue(after['result']['operator_observation_pending'])
+        self.assertFalse(result['replayed']); self.assertIsNone(self.store.claim(VM1, ident)['task'])
+        with self.assertRaises(Conflict): self.store.heartbeat(VM1, ident, fixtures.claim_identity(claim))
+
+    def test_settled_failed_amendment_preserves_failure_and_does_not_resume(self):
+        self.assert_settled_amendment_preserves_outcome('failed')
+
+    def test_settled_blocked_amendment_preserves_cooldown_and_does_not_queue(self):
+        self.assert_settled_amendment_preserves_outcome('blocked')
+
     def test_current_and_historical_accounting_honor_amended_limit_only_on_its_assignment(self):
         claim, _ = self.running(); ident = claim['task']['id']
         self.store.amend_attempt_allowance('admin', amendment_request(self.store, ident))

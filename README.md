@@ -207,10 +207,12 @@ by another 1–10 through admin `POST /api/attempt-allowances/amend` or
 `previous_grant_id`, `unsettled_operations: []` and an independently verified
 `settlement_receipt: {path, sha256}` to the request; add `fix_attempt_limit` to
 the exact expected-state fields. It supports a genuinely quiet running task
-owned by the same worker, or settled queued work, preserving the live claim,
+owned by the same worker, or settled queued/failed/blocked work, preserving the live claim,
 generation, status, counters and all existing evidence. The administrator must
 actually verify owning settlement at apply; the service cannot inspect guest
 processes/files. No fake finish or deferral is needed.
+Failed/blocked outcomes, pending observations, approval metadata and retry timers
+stay unchanged; an amendment does not itself queue or resume execution.
 
 `capabilities.attempt_allowance_amendments: 1` advertises support. Latest
 `attempt_allowance.id` hashes the new immutable request; its `previous_grant_id`
