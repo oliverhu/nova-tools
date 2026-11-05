@@ -161,13 +161,14 @@ class HTTPTests(unittest.TestCase):
         ident = fixtures.prepared_task(store)
         first = store.apply_attempt_allowance('admin', fixtures.allowance_request(store, ident))
         claim = store.claim(fixtures.VM1, ident); body = amendment_request(store, ident)
+        body.update(additional_attempts=50, response='Assign another 50 attempts')
         url = '/api/attempt-allowances/amend'
         for actor in (None, 'oliver-mini', 'oliver-mac'):
             self.assertEqual(403, self.request(url, actor, body)[0])
         self.assertEqual(409, self.request(url, 'admin', {**body, 'previous_grant_id': 'b' * 64})[0])
         code, raw, _ = self.request(url, 'admin', body); self.assertEqual(200, code)
         result = json.loads(raw); self.assertFalse(result['replayed'])
-        self.assertEqual(('running', fixtures.VM1, claim['task']['generation'], 20, 40, 20),
+        self.assertEqual(('running', fixtures.VM1, claim['task']['generation'], 20, 80, 60),
                          tuple(result['task'][k] for k in ('status', 'owner', 'generation', 'fix_attempts_used', 'fix_attempt_limit', 'fix_attempts_remaining')))
         _, raw, _ = self.request('/api/tasks/' + ident)
         fresh = json.loads(raw); self.assertEqual(first['grant'], fresh['attempt_allowances'][0])

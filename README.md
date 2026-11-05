@@ -202,7 +202,7 @@ cap and the legacy single-extra path remain unchanged; grants cannot stack with
 that exception. A fresh attendance response is still required where applicable.
 
 A **distinct new primary human authorization** can extend the exact current grant
-by another 1–10 through admin `POST /api/attempt-allowances/amend` or
+by another 1–50 through admin `POST /api/attempt-allowances/amend` or
 `attempt-allowance-amend --receipt /private/amendment.json`. Add
 `previous_grant_id`, `unsettled_operations: []` and an independently verified
 `settlement_receipt: {path, sha256}` to the request; add `fix_attempt_limit` to
@@ -222,6 +222,8 @@ unchanged; append-only `attempt_allowance_amendments` records before/after state
 Each distinct authorization can extend the latest parent, with stale-parent
 comparison and no forks. Exact replay returns the old audit/current state without
 adding again. Primary sources cannot be reused across initial grants/amendments.
+The initial grant remains capped at ten. A fifty-attempt amendment requires one
+verified human authorization for fifty; do not split it into invented approvals.
 Same-host attendance cycles preserve the latest authority; real host transfer
 expires the entire chain. A caller must reject a candidate bound to an older
 grant and qualify fresh authority using the amendment's expected prior limit

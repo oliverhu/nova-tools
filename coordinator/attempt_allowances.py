@@ -30,7 +30,9 @@ def allowance_payload(body, workers, amendment=False):
     text(body['response'], 'actual human response', 2000)
     text(body['evidence'], 'scope evidence', 6000)
     integer(body['additional_attempts'], 'additional_attempts', 1)
-    require(body['additional_attempts'] <= 10, 'Only a bounded grant of up to ten extra attempts is supported')
+    maximum = 50 if amendment else 10
+    require(body['additional_attempts'] <= maximum,
+            'Only a bounded grant of up to ' + str(maximum) + ' extra attempts is supported')
     expected = body['expected']
     expected_fields = set(EXPECTED) | ({'fix_attempt_limit'} if amendment else set())
     require(isinstance(expected, dict) and set(expected) == expected_fields, 'Exact expected task/assignment binding required')
