@@ -43,6 +43,46 @@ two 8-vCPU/24-GiB guests ran; remeasure before changing allocation.
 
 ## Request through completion
 
+### CLI workers on additional guests
+
+An explicitly enrolled CLI guest may use `nova-cli-worker status` and
+`nova-cli-worker wake --task ID` instead of a desktop chat wake. This is a one-shot
+route invoked by the existing Dispatcher, never another poll or worker schedule.
+Private `~/.config/nova-coordinator/cli-dispatch.json` binds the hostname, worker,
+repository, signed CLI executable, expected ChatGPT email hash, model, reasoning
+and `admission: enabled`. Authentication remains in the guest's saved CLI login;
+the route removes inherited OpenAI/Codex auth overrides and checks the effective
+account, model/reasoning catalog and current usage before starting. It never
+falls back to another account or model.
+
+Dispatcher checks actual task-relevant readiness and instruction adoption before
+each exact wake. The guest worker self-claims, performs actual acceptance and
+finishes under its own claim. The route checks identity, capacity, prerequisites,
+pause state and duplicate ownership, and excludes heavy work and publication.
+Unqualified GUI, Browser, signing and simulator contexts remain unavailable until
+qualified by an explicit onboarding task. A shell success does not admit them.
+
+Each run persists private events, worker report, exact finish response and fresh
+API readback in `~/.local/state/nova-cli-dispatch/RUN_ID/`. Dispatcher reads these
+and the authoritative API and reports directly to Coordinator under the existing
+communication authorization. Cross-account desktop messaging is not required.
+The worker stops after the assigned task so the existing Dispatcher can select
+the next exact eligible task. There is no unfiltered claim loop. A process exit,
+unknown effect, failed model run or incomplete acceptance leaves the run needing
+attention; it cannot be automatically replayed. Preserve evidence and reconcile
+the actual owning claim/operations before a supported manual recovery. A kernel
+file lock prevents concurrent duplicate supervisors, including across SSH loss.
+
+`resume --run-id ID --note-file /absolute/private-note` explicitly continues an
+ended blocked/failed run in its original recorded CLI session. It requires the
+same owner, matching finish/API generation, stopped execution and a concrete
+correction note; the worker still inspects external state and performs its own
+supported retry and exact claim. Running/unknown operations and approval waits
+are not automatically resumed. Historical failed-run evidence remains intact.
+`scripts/cli-worker-status.py --host SAVED_SSH_ALIAS` reads current task progress
+and the last worker message without starting a run. It can query several aliases
+in parallel and makes no scheduling or claim changes.
+
 1. Coordinator submits once with a stable `request_key`, concrete acceptance and
    real dependency IDs. Report the **service-returned task ID** to the user.
 2. Coordinator may assign directly; Dispatcher handles eligible idle wake-ups

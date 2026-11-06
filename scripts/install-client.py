@@ -60,6 +60,9 @@ def main():
     launcher=binpath/"nova-coord"
     launcher.write_text("#!/usr/bin/env python3\nimport sys\nsys.path.insert(0,"+repr(str(destination))+")\nfrom coordinator.client import main\nmain()\n")
     launcher.chmod(0o755)
+    cli_launcher=binpath/"nova-cli-worker"
+    cli_launcher.write_text("#!/usr/bin/env python3\nimport sys\nsys.path.insert(0,"+repr(str(destination))+")\nfrom coordinator.cli_dispatch import main\nmain()\n")
+    cli_launcher.chmod(0o755)
     skill=Path.home()/".codex/skills/nova-coordination"
     skill.mkdir(parents=True,exist_ok=True)
     shutil.copy2(ROOT/"skill/SKILL.md",skill/"SKILL.md")
