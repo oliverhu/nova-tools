@@ -16,6 +16,7 @@ import uuid
 import tempfile
 from .approvals import approval_payload, approval_id
 from .outcomes import FINISH_OUTCOMES, finish_outcome
+from .workers import MINI_VM_WORKERS
 
 
 CONFIG=Path.home()/".config/nova-coordinator/client.json"
@@ -62,8 +63,12 @@ class Client:
         # Missing external storage must not be substituted with internal disk.
         disk=shutil.disk_usage(build_path).free/(1024**3) if Path(build_path).is_dir() else 0
         reserve=self.config.get("disk_reserve_gb",50)
-        return self.request("/api/worker/pulse",{"capacity":{"memory_gb":round(memory,1),"cpus":cpus,
-            "disk_gb":round(max(0,disk-reserve),1),"capabilities":self.config.get("capabilities",["macos","development"])}})
+        body = {"capacity":{"memory_gb":round(memory,1),"cpus":cpus,
+            "disk_gb":round(max(0,disk-reserve),1),"capabilities":self.config.get("capabilities",["macos","development"])}}
+        if self.config.get('worker') in MINI_VM_WORKERS:
+            from .worker_status import collect_cli_status
+            body['cli_status'] = collect_cli_status(self.config['worker'])
+        return self.request('/api/worker/pulse', body)
 
     def claim(self,ident=None):
         # Recover only decisions already explicitly verified and journaled locally.

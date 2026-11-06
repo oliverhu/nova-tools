@@ -68,6 +68,32 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(200,code);self.assertEqual(audit,json.loads(raw)['audit_id']);self.assertTrue(json.loads(raw)['replayed'])
         self.assertEqual(400,self.request('/api/releases/policy/apply','admin',{**body,'execution_stopped':False})[0])
 
+    def test_worker_status_http_is_public_read_only_and_pulses_keep_actor_fencing(self):
+        from coordinator.workers import MINI_VM_WORKERS
+        first, second = MINI_VM_WORKERS
+        self.tokens[first] = 'd'*40; self.tokens[second] = 'e'*40
+        # Server keeps the credentials mapping used by the ordinary test helper.
+        self.server.credentials.update(self.tokens)
+        status = {'available':True,'busy':True,'run_state':'running','task_id':'a'*16,
+                  'task_generation':2,'completion_verified':False}
+        body = {'worker':second,'capacity':{'cpus':5},'cli_status':status}
+        self.assertEqual(403,self.request('/api/worker/pulse',body=body)[0])
+        self.assertEqual(200,self.request('/api/worker/pulse',first,body)[0])
+        code, raw, _ = self.request('/api/state')
+        self.assertEqual(200,code)
+        workers = {w['id']:w for w in json.loads(raw)['workers']}
+        self.assertEqual('running',workers[first]['cli_status']['run_state'])
+        self.assertEqual({},workers[second]['cli_status'])
+        self.assertTrue(workers[first]['paused'])
+        self.assertNotIn(self.tokens[first].encode(),raw)
+        self.assertEqual(400,self.request('/api/worker/pulse',first,{
+            **body,'cli_status':{**status,'prompt':'PRIVATE_PROMPT'}})[0])
+        code, raw, headers = self.request('/worker-status.js')
+        self.assertEqual(200,code); self.assertIn(b'NovaWorkerStatus',raw)
+        self.assertIn("frame-ancestors 'none'",headers['Content-Security-Policy'])
+        self.assertEqual(403,self.request('/worker-status.js',extra={'Host':'evil.invalid'})[0])
+        self.assertEqual(403,self.request('/api/state',extra={'Sec-Fetch-Site':'cross-site'})[0])
+
     def test_worker_cannot_reconcile(self):
         self.assertEqual(403,self.request("/api/tasks/1234567890abcdef/reconcile","oliver-mini",{})[0])
 

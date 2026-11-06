@@ -87,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(403,{'error':'Unknown service address'})
         if self.headers.get('Sec-Fetch-Site') not in (None,'same-origin','none'):
             return self.respond(403,{'error':'Cross-site requests are not allowed'})
-        if self.command=="GET" and path in ("/","/app.js","/style.css"):
+        if self.command=="GET" and path in ("/","/app.js","/worker-status.js","/style.css"):
             file=self.server.web/("index.html" if path=="/" else path[1:])
             return self.respond(200,file.read_bytes(),mimetypes.guess_type(str(file))[0] or "text/plain")
         # The LAN dashboard has no sign-in or access-token prompt. Worker

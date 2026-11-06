@@ -77,6 +77,16 @@ protect mutations; internal CA verification protects HTTPS. Browser OS trust is
 separate from client trust. No public ingress or tunnel is installed. Never
 print client configurations, credentials, or claim tokens.
 
+Mini VM1 and Mini VM2 have a separate dashboard section. Their existing resource
+pulse optionally includes bounded local CLI state; no model or new poller runs.
+Resource connectivity and CLI freshness use separate server timestamps. Older
+clients, stale reports and unreachable workers display unavailable status rather
+than idle. Current queue ownership, historical CLI runs, completed work and the
+recent queued-task count are shown separately. Active tasks and each Mini's latest
+completed task remain available outside the normal 500-task history window.
+Only allowlisted IDs, states, flags and timestamps leave local CLI storage;
+progress and blockers come from the existing public queue, never private CLI logs.
+
 The existing **Nova — Queue Dispatcher** checks every **15 minutes**, using the
 private current worker/session map and authoritative queue readiness. It wakes
 only eligible idle developers and does not duplicate direct Coordinator assignments
