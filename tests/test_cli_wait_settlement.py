@@ -39,6 +39,28 @@ def fixture():
 
 
 class QueuedWaitSettlementTests(unittest.TestCase):
+    def test_original_owner_wait_shapes_and_conflicts(self):
+        for wait_outcome in ('queued_wait', None):
+            args = list(copy.deepcopy(fixture()))
+            args[5]['outcome'] = 'queued_wait'
+            del args[5]['execution_stopped']
+            args[5]['cleanup'] = {'execution_stopped': True}
+            if wait_outcome is None:
+                del args[6]['outcome']
+            else:
+                args[6]['outcome'] = wait_outcome
+            adapter.validate_settlement(*args)
+            for change in ({'execution_stopped': False}, {'unknown_operations': ['input']},
+                           {'external_state_checked': False}):
+                bad = copy.deepcopy(args)
+                bad[5]['cleanup'].update(change)
+                with self.subTest(wait_outcome=wait_outcome, change=change), self.assertRaises(ValueError):
+                    adapter.validate_settlement(*bad)
+            bad = copy.deepcopy(args); bad[5]['execution_stopped'] = False
+            with self.assertRaises(ValueError): adapter.validate_settlement(*bad)
+            bad = copy.deepcopy(args); bad[6]['outcome'] = None
+            with self.assertRaises(ValueError): adapter.validate_settlement(*bad)
+
     def test_owning_defer_with_empty_result_is_not_a_completion_or_service_mutation(self):
         args = fixture(); before = copy.deepcopy(args)
         adapter.validate_settlement(*args)

@@ -578,13 +578,22 @@ def validate_queued_wait(run, task, response, report, wait_receipt, worker):
             or any(key not in response or response[key] != task.get(key) for key in (
                 'id', 'generation', 'step', 'status', 'owner', 'last_owner', 'dependencies', 'requirements'))):
         raise ValueError('Queued settlement requires this ended run and matching unowned dependency-wait response')
-    if (not isinstance(report, dict) or not isinstance(wait_receipt, dict)
+    cleanup = report.get('cleanup', {}) if isinstance(report, dict) else {}
+    if (not isinstance(report, dict) or not isinstance(wait_receipt, dict) or not isinstance(cleanup, dict)
             or any(value.get('task') != task['id'] or value.get('generation') != task['generation']
-                   or value.get('worker') != worker or value.get('outcome') not in ('queued', 'waiting')
-                   or value.get('execution_stopped') is not True
+                   or value.get('worker') != worker
                    or value.get('acceptance_complete') is True
                    or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []
                    for value in (report, wait_receipt))
+            or report.get('outcome') not in ('queued', 'waiting', 'queued_wait')
+            or ('outcome' in wait_receipt and wait_receipt['outcome'] not in ('queued', 'waiting', 'queued_wait'))
+            or (report.get('execution_stopped') is not True and cleanup.get('execution_stopped') is not True)
+            or ('execution_stopped' in report and report['execution_stopped'] is not True)
+            or ('execution_stopped' in cleanup and cleanup['execution_stopped'] is not True)
+            or cleanup.get('unknown_operations', []) != [] or cleanup.get('unsettled_operations', []) != []
+            or ('external_state_checked' in cleanup and cleanup['external_state_checked'] is not True)
+            or ('external_state_checked' in report and report['external_state_checked'] is not True)
+            or wait_receipt.get('execution_stopped') is not True
             or wait_receipt.get('external_state_checked') is not True
             or wait_receipt.get('dependencies') != task['dependencies']
             or not isinstance(wait_receipt.get('evidence'), str) or not wait_receipt['evidence'].strip()):
