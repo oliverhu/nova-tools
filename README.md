@@ -640,7 +640,10 @@ reads `POST /api/releases/policy/plan` with `{"repository":"owner/repo"}` and
 reviews its exact state fingerprint, proposed supersessions, inherited constraints
 and barriers. `POST /api/releases/policy/apply` takes that repository/fingerprint,
 `execution_stopped: true`, `external_state_checked: true` and descriptive `evidence`.
-It activates the policy and appends a before/after audit. Exact request replay
+It atomically activates the policy, executes only the planned safe retirements
+and appends a before/after audit; it creates no release task and leaves the hourly
+clock intact. Each historical handoff review also reconciles safe carry-forward
+without minting a release. Exact request replay
 returns the original audit; stale task, repository or history state rejects.
 This is queue maintenance, never publication authorization or a replacement for
 an actual rollout quiet boundary.

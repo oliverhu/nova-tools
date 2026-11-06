@@ -132,7 +132,7 @@ def calculate(store, db, repo):
 
 
 def snapshot(store, db, repo):
-    return {'repository': dict(repo), 'policy': dict(db.execute('SELECT * FROM publication_policies WHERE repository=?', (repo['name'],)).fetchone() or {}),
+    return {'repository': dict(db.execute('SELECT * FROM repositories WHERE name=?', (repo['name'],)).fetchone()), 'policy': dict(db.execute('SELECT * FROM publication_policies WHERE repository=?', (repo['name'],)).fetchone() or {}),
             'tasks': [history(store, db, r) for r in rows_for(db, repo['name'])]}
 
 
@@ -178,12 +178,15 @@ def apply_plan(store, actor, body):
         # claim, remove an approval or turn a legacy receipt into no-effects proof.
         db.execute('INSERT OR IGNORE INTO publication_policies(repository) VALUES(?)', (repo['name'],))
         db.execute('UPDATE publication_policies SET enabled=1 WHERE repository=?', (repo['name'],))
+        # Execute only the exact safe retirement plan in this CAS transaction.
+        # This does not mint a release, publish, or alter the hourly clock.
+        prepare_tick(store, db, repo)
         audit_id = digest({'request': body, 'before': before})
         store.event(db, actor, 'publication-policy-enabled', detail=encode({'repository': repo['name'], 'audit_id': audit_id, 'evidence': evidence}))
         after = snapshot(store, db, repo)
         db.execute('INSERT INTO publication_policy_audits VALUES(?,?,?,?,?,?,?)',
                    (audit_id, repo['name'], actor, encode(body), encode(before), encode(after), store.clock()))
-        return {'audit_id': audit_id, 'proposal': calculate(store, db, repo), 'enabled': True}
+        return {'audit_id': audit_id, 'proposal': calculate(store, db, repo), 'superseded':proposal['supersede'], 'enabled': True}
 
 
 def prepare_tick(store, db, repo):
@@ -191,6 +194,8 @@ def prepare_tick(store, db, repo):
     if not proposal['enabled']:
         return None
     before = snapshot(store, db, repo)
+    if not proposal['barriers']:
+        db.execute("UPDATE repositories SET last_error='' WHERE name=?",(repo['name'],))
     for ident in proposal['supersede']:
         # Pristine predicate and ancestry were checked in this same write
         # transaction. Results, targets, receipts, dependencies/counters stay intact.
@@ -345,6 +350,7 @@ def retire_reviewed_handoff(store, actor, body):
                    (store.clock(),'Audited obsolete unstarted handoff: '+evidence,row['id']))
         ident=digest({'request':body,'before':before})
         store.event(db,actor,'publication-unstarted-reviewed',row['id'],encode({'audit_id':ident,'desired_commit':repo['merged_head'],'owner_receipt_hashes':hashes,'evidence':evidence}))
+        prepare_tick(store, db, repo)
         db.execute('INSERT INTO publication_policy_audits VALUES(?,?,?,?,?,?,?)',
                    (ident,repo['name'],actor,encode(body),encode(before),encode(snapshot(store,db,repo)),store.clock()))
         return {'audit_id':ident,'task':store.public_task(db.execute('SELECT * FROM tasks WHERE id=?',(row['id'],)).fetchone())}

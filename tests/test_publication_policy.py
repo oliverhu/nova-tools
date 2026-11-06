@@ -116,6 +116,17 @@ class PublicationPolicyTests(unittest.TestCase):
                     self.assertEqual(before,self.raw(old));self.assertIsNone(self.store.claim(STUDIO,old)['task'])
                 finally:self.tearDown()
 
+    def test_activation_reconciles_exact_plan_without_manual_release_or_clock_change(self):
+        old=self.tick('b')[0];latest=self.tick('c',('a','b'))[0]
+        before_clock=self.store.snapshot()['repositories'][0]['next_check']
+        count=len(self.store.snapshot()['tasks'])
+        result,_=self.enable()
+        self.assertEqual([old],result['superseded'])
+        self.assertEqual('cancelled',self.store.detail(old)['status'])
+        self.assertEqual('queued',self.store.detail(latest)['status'])
+        self.assertEqual(count,len(self.store.snapshot()['tasks']))
+        self.assertEqual(before_clock,self.store.snapshot()['repositories'][0]['next_check'])
+
     def test_no_change_retires_proven_obsolete_queue_without_changing_baseline(self):
         old=self.tick('b')[0];new=self.tick('c')[0];c=self.claim(new)
         self.finish(c,published_commit='c'*40,publication_ref='verified:c')
