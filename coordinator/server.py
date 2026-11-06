@@ -125,6 +125,14 @@ class Handler(BaseHTTPRequestHandler):
                 if actor not in ('admin', *WORKERS):
                     return self.respond(403,{'error':'Authenticated approval actor required'})
                 return self.respond(200,store.apply_approval(actor,body))
+            if path in ('/api/releases/policy/plan', '/api/releases/policy/apply', '/api/releases/policy/review-unstarted'):
+                if actor != 'admin':
+                    return self.respond(403, {'error':'Publication policy requires administrator identity'})
+                from . import publication_policy
+                operation = (publication_policy.plan if path.endswith('/plan') else
+                             publication_policy.retire_reviewed_handoff if path.endswith('/review-unstarted') else
+                             publication_policy.apply_plan)
+                return self.respond(200, operation(store, actor, body))
             if path == '/api/releases/start':
                 if actor != 'admin':
                     return self.respond(403, {'error':'Explicit release requests require administrator identity'})

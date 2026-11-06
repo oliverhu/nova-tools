@@ -260,7 +260,7 @@ def supervised(client,ident,command,env=None,heartbeat_interval=25):
     return code
 
 
-def observe_main(client):
+def observe_main(client, snapshot=None):
     """Report actual remote main with existing host Git credentials; no fetch/write."""
     repo = client.config.get("repository")
     if not repo:
@@ -275,7 +275,12 @@ def observe_main(client):
     heads = [line[0] for line in lines if len(line)==2 and line[1]=="refs/heads/"+branch]
     if len(heads)!=1:
         raise RuntimeError("Remote main observation was ambiguous")
-    return client.request("/api/repositories/observe", {"repository":repo["name"],"branch":branch,"commit":heads[0],"observed_at":started})
+    body = {"repository":repo["name"],"branch":branch,"commit":heads[0],"observed_at":started}
+    from .publication_ancestry import attestation
+    proof = attestation(repo, heads[0], snapshot)
+    if proof is not None:
+        body['publication_ancestry'] = proof
+    return client.request("/api/repositories/observe", body)
 
 
 def publish_permit(client,ident):
@@ -376,7 +381,7 @@ def main():
     elif args.command=="wait":
         receipt=json.loads(args.receipt.read_text())
         result=client.request(f"/api/tasks/{args.task}/defer", {**receipt, **client.claim_body(args.task)})
-    elif args.command=="observe-main":result=observe_main(client)
+    elif args.command=="observe-main":result=observe_main(client, snapshot=client.request('/api/state'))
     elif args.command=="publish-permit":
         if not args.task:parser.error('NOVA_COORD_TASK_ID or task ID is required')
         result=publish_permit(client,args.task)
@@ -409,10 +414,10 @@ def main():
         while True:
             try:
                 client.pulse()
-                if time.monotonic()-last_observation >= 120:
-                    observe_main(client)
-                    last_observation=time.monotonic()
                 snapshot=client.request("/api/state")
+                if time.monotonic()-last_observation >= 120:
+                    observe_main(client, snapshot=snapshot)
+                    last_observation=time.monotonic()
                 inbox={"updated":time.time(),"worker":client.config["worker"],
                     "tasks":[t for t in snapshot["tasks"] if t.get("preferred_worker")==client.config["worker"] or t.get("owner")==client.config["worker"]]}
                 path=client.path.parent/"inbox.json"

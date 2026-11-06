@@ -32,6 +32,19 @@ IDs or copied credentials. Use the existing human-authorized Nova-to-Nova routin
 for scoped reports. Preserve actual approval blocks and current user instructions.
 The repository's `docs/agent-coordination.md` explains the full role and API mapping.
 
+## Suspended large-text checks
+
+The human instructed on **2026-11-06**: suspend large-text, largest-text,
+accessibility-size and Dynamic Type expansion checks across all development,
+acceptance, release and repair flows until the human updates this instruction.
+This overrides older acceptance/checklist requirements for those checks, including
+existing tasks. Record each affected check as **skipped by human policy**, never
+passed; do not make it a completion, merge, release or repair gate. Continue
+unrelated checks and preserve product behavior and prior evidence. This changes
+test scope only; it grants no OS/tool permission or permission-denial bypass.
+Coordinator keeps this policy installed and acknowledged through the existing
+instruction-upkeep process; Dispatcher applies it to assignments and reports.
+
 ## Keep installed instructions current
 
 The user assigned **Coordinator ownership of instruction synchronization** on
@@ -353,14 +366,35 @@ were increased. Diagnose shared tooling once and link all affected features.
 
 ## Hourly publication
 
-Every hour the service checks for a fresh observed main commit different from
-the last verified publication. The background clients observe origin/main using
-their existing Git access, without modifying checkouts. The service creates a
-single deduplicated publish task with an exact `release_target`; an eligible
-qualified developer can claim it. It does not build or publish by itself, and there is no publish lock.
-The same repository/commit is not queued twice. A later merged commit gets its
-own task at the next hourly check, even if an earlier task is still running or
-failed. Workers check actual release state and never downgrade a newer release.
+The existing hourly service checks fresh origin/main observations against the
+verified published baseline. It never builds or publishes by itself. Targets stay
+immutable and exact-target requests are deduplicated; workers inspect actual
+external state and never downgrade a newer release.
+
+Publication coalescing is OFF until an administrator explicitly activates it for
+the repository using the reviewed, current-state CAS policy API. While OFF, the
+legacy scheduler creates a task for each new observed commit even if an earlier
+task remains outstanding. Deploying new source alone does not activate the policy.
+
+After activation, the same hourly transaction keeps at most one actionable
+publication. It supersedes only demonstrably unstarted obsolete targets with
+fresh authenticated Git ancestry evidence, carries every original dependency and
+restrictive worker/resource requirement forward, and appends immutable audits.
+A running, partial, unknown, approval-held or unreviewed historical claim is a
+barrier: newer commits remain the desired repository head until it settles,
+without retargeting or interrupting that claim. No-change creates no new task.
+Previously claimed handoffs require the separate exact owner-receipt no-effects
+review API; never substitute broad cancellation or infer cleanup from idleness.
+Explicit upload-only authority keeps its distinct scope and original conditions.
+Missing proof, conflicting constraints and exact-target dependents fail closed;
+report remaining exceptions. This is repository scheduling, not a global lock,
+new timer, permission grant or manual publication. Preserve original human stops.
+
+Coordinator owns syncing the qualified instruction revision and current client
+bundle separately from the minimal service source, including actual per-actor
+readback. Existing reporters need the ancestry observer support; old versions
+remain compatible but cannot establish source proof. See README's audited
+publication coalescing flow for the exact APIs and deployment separation.
 
 For automatic publication, only a claimed publish task may run the normal signed/notarized release flow.
 Use `publish ID --receipt /new/receipt.json --command ...` or the existing

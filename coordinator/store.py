@@ -15,6 +15,7 @@ from pathlib import Path
 from .approvals import approval_payload, approval_id
 from .workers import WORKERS, INITIALLY_PAUSED_WORKERS, MINI_VM_WORKERS
 from .outcomes import finish_outcome
+from . import publication_policy
 from .attempt_accounting import BINDING, correction_payload
 from .attempt_allowances import allowance_payload
 from .worker_status import validate_cli_status
@@ -135,6 +136,8 @@ class Store:
                 db.execute("ALTER TABLE workers ADD COLUMN cli_status TEXT NOT NULL DEFAULT '{}'")
             if 'cli_status_seen' not in worker_columns:
                 db.execute('ALTER TABLE workers ADD COLUMN cli_status_seen REAL')
+
+            db.executescript(publication_policy.SCHEMA)
             columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
             if "last_owner" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN last_owner TEXT")
@@ -468,6 +471,9 @@ class Store:
                   "waiting_reason": "", "waiting_dependencies": []}
         if row['status'] == 'running':
             return {**result, 'next_worker': row['owner'], 'next_worker_label': row['owner']}
+        policy_reason = publication_policy.admission(self, db, row) if row['status'] in ('queued', 'blocked') else ''
+        if policy_reason and row['status'] in ('queued', 'blocked'):
+            return {**result, 'waiting_reason': policy_reason, 'next_worker_label': 'Publication policy wait'}
         if row['status'] == 'pending_external_approval':
             return {**result, 'next_worker_label': 'Awaiting external approval',
                     'waiting_reason': 'No automatic retries. Resume only after approval is verified.'}
@@ -614,6 +620,8 @@ class Store:
             rows = db.execute("SELECT * FROM tasks WHERE status IN ('queued','blocked') ORDER BY priority DESC,created,id").fetchall()
             for row in rows:
                 if task_id and row["id"] != task_id:
+                    continue
+                if publication_policy.admission(self, db, row):
                     continue
                 if row['status'] == 'blocked' and (self.retry_wait(row) or self.candidate(db, row) != worker):
                     continue
@@ -1330,6 +1338,9 @@ class Store:
             raise Invalid("Branch observation must be recent")
         with self.transaction() as db:
             result = self._observe(db, body, observed)
+            if result['accepted']:
+                repo = db.execute('SELECT * FROM repositories WHERE name=?', (body['repository'],)).fetchone()
+                publication_policy.observe(self, db, repo, body)
             return result
 
     def tick_releases(self, repository=None):
@@ -1352,6 +1363,9 @@ class Store:
                     db.execute("UPDATE repositories SET last_error='Waiting for fresh origin/main observation' WHERE name=?", (repo["name"],))
                     continue
                 db.execute("UPDATE repositories SET next_check=?,last_checked=?,last_error='' WHERE name=?", ((int(now)//3600+1)*3600, now, repo["name"]))
+                policy = publication_policy.prepare_tick(self, db, repo)
+                if policy and policy['defer']:
+                    continue
                 if repo["merged_head"] == repo["published_head"]:
                     continue
                 target = {"repository": repo["name"], "branch": repo["branch"], "commit": repo["merged_head"]}
@@ -1373,9 +1387,18 @@ class Store:
                     # signed-in Xcode upload readiness on either guest.
                     requirements = {'worker': 'oliverhu-mac-studio'}
                     instructions += ' ' + IOS_UPLOAD_POLICY
+                dependencies = []
+                if policy:
+                    try:
+                        carried = publication_policy.inherited_requirements([], {'requirements': requirements, 'dependencies': []})
+                        carried = publication_policy.inherited_requirements([{'requirements': encoded(policy['requirements']), 'dependencies': encoded(policy['dependencies'])}], carried)
+                    except (ValueError, TypeError):
+                        db.execute('UPDATE repositories SET last_error=? WHERE name=?', ('Conflicting publication routing requirements', repo['name']))
+                        continue
+                    requirements, dependencies = carried['requirements'], carried['dependencies']
                 steps = [{"name":"Validate and publish merged changes","kind":"publish","instructions":instructions}]
                 db.execute("""INSERT INTO tasks(id,request_key,request_hash,title,description,created,updated,submitted_by,priority,compute,requirements,dependencies,steps,result,task_type)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ident,key,hashlib.sha256(key.encode()).hexdigest(),title,instructions,now,now,"admin" if repository else "hourly-scheduler",90 if repository else 50,"standard",encoded(requirements),"[]",encoded(steps),encoded({"release_target":target}),"publish"))
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ident,key,hashlib.sha256(key.encode()).hexdigest(),title,instructions,now,now,"admin" if repository else "hourly-scheduler",90 if repository else 50,"standard",encoded(requirements),encoded(dependencies),encoded(steps),encoded({"release_target":target}),"publish"))
                 self.event(db, "admin" if repository else "hourly-scheduler", "submitted", ident, title)
                 created.append(ident)
             return created
@@ -1416,7 +1439,8 @@ class Store:
                 "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
                                 "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1,
                                 "attempt_allowance_amendments":1,"completed_attempt_correction":1,
-                                "ios_upload_only_releases":1},
+                                "ios_upload_only_releases":1,"publication_policy":1},
+                "publication_candidates":[publication_policy.target(r) for r in db.execute("SELECT result FROM tasks WHERE task_type='publish' AND status NOT IN ('completed','cancelled')")],
                 "locks":[], "repositories":[dict(r) for r in db.execute("SELECT * FROM repositories ORDER BY name")],
                 "events":[dict(r) for r in db.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")]}
 
