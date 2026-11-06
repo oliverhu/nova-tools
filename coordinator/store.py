@@ -13,10 +13,11 @@ import time
 import uuid
 from pathlib import Path
 from .approvals import approval_payload, approval_id
-from .workers import WORKERS, INITIALLY_PAUSED_WORKERS
+from .workers import WORKERS, INITIALLY_PAUSED_WORKERS, MINI_VM_WORKERS
 from .outcomes import finish_outcome
 from .attempt_accounting import BINDING, correction_payload
 from .attempt_allowances import allowance_payload
+from .worker_status import validate_cli_status
 
 
 class Conflict(Exception):
@@ -129,6 +130,11 @@ class Store:
         with self.connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
+            worker_columns = {r[1] for r in db.execute('PRAGMA table_info(workers)')}
+            if 'cli_status' not in worker_columns:
+                db.execute("ALTER TABLE workers ADD COLUMN cli_status TEXT NOT NULL DEFAULT '{}'")
+            if 'cli_status_seen' not in worker_columns:
+                db.execute('ALTER TABLE workers ADD COLUMN cli_status_seen REAL')
             columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
             if "last_owner" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN last_owner TEXT")
@@ -349,11 +355,20 @@ class Store:
         if not isinstance(caps, list) or not all(isinstance(x, str) and len(x) < 80 for x in caps) or len(caps) > 20:
             raise Invalid("Invalid capabilities")
         normalized["capabilities"] = caps
+        cli_status = None
+        if 'cli_status' in body:
+            try:
+                cli_status = validate_cli_status(body['cli_status'])
+            except ValueError:
+                raise Invalid('Invalid CLI status metadata') from None
         with self.transaction() as db:
             self.expire(db)
             if not db.execute("SELECT id FROM workers WHERE id=?", (worker,)).fetchone():
                 raise Invalid("Unknown worker")
             db.execute("UPDATE workers SET capacity=?,seen=? WHERE id=?", (encoded(normalized), self.clock(), worker))
+            if cli_status is not None:
+                db.execute('UPDATE workers SET cli_status=?,cli_status_seen=? WHERE id=?',
+                           (encoded(cli_status), self.clock(), worker))
             return {"worker": worker, "heartbeat_seconds": 30, "lease_seconds": self.lease_seconds}
 
     def fits(self, task, worker):
@@ -1370,7 +1385,8 @@ class Store:
             self.expire(db)
             workers=[]
             for row in db.execute("SELECT * FROM workers ORDER BY id"):
-                w=dict(row); w["capacity"]=json.loads(w["capacity"]); w["online"]=w["seen"]>self.clock()-90; workers.append(w)
+                w=dict(row); w["capacity"]=json.loads(w["capacity"]); w["online"]=w["seen"]>self.clock()-90
+                w['cli_status']=json.loads(w['cli_status']); workers.append(w)
             tasks=[self.public_task(r) for r in db.execute("SELECT * FROM tasks ORDER BY created DESC LIMIT 500")]
             for t in tasks:
                 row = db.execute("SELECT * FROM tasks WHERE id=?",(t['id'],)).fetchone()
@@ -1378,7 +1394,25 @@ class Store:
                 t['approval'] = self.approval_state(db,row)
                 if t["status"]=="queued":
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
-            return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
+            # Worker cards must retain current ownership even when its task was
+            # created before the dashboard's 500-task history window.
+            worker_tasks = {r['id']: self.public_task(r) for r in db.execute(
+                "SELECT * FROM tasks WHERE status IN ('running','held') AND owner IS NOT NULL")}
+            for worker in workers:
+                if worker['id'] not in MINI_VM_WORKERS:
+                    continue
+                run_task = worker['cli_status'].get('task_id')
+                if run_task:
+                    row = db.execute('SELECT * FROM tasks WHERE id=?', (run_task,)).fetchone()
+                    if row:
+                        worker_tasks[row['id']] = self.public_task(row)
+                for row in db.execute("SELECT * FROM tasks WHERE status='completed' AND COALESCE(last_owner,owner)=? ORDER BY updated DESC", (worker['id'],)):
+                    task = self.public_task(row)
+                    result = task.get('result', {})
+                    if result.get('acceptance_complete') is not False and result.get('outcome', 'completed') == 'completed':
+                        worker_tasks[task['id']] = task
+                        break
+            return {"server_time":self.clock(),"workers":workers,"tasks":tasks,"worker_tasks":list(worker_tasks.values()),
                 "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
                                 "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1,
                                 "attempt_allowance_amendments":1,"completed_attempt_correction":1,
