@@ -10,6 +10,8 @@ import subprocess
 import sys
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from coordinator.workers import WORKERS
 
 
 def restricted(path,text):
@@ -26,7 +28,7 @@ def main():
     p.add_argument("--trust-internal-ca",action="store_true",help="Trust the public internal CA for SSL in the login keychain")
     args=p.parse_args()
     config=json.loads(args.config.read_text())
-    if config.get("worker") not in ("oliver-mac", "oliver-mini", "oliverhu-mac-studio", "oliverhu-mac-studio-vm1", "oliverhu-mac-studio-vm2"):
+    if config.get("worker") not in WORKERS:
         p.error("Use a worker config")
     destination=Path.home()/".local/share/nova-coordinator"
     destination.mkdir(parents=True,exist_ok=True,mode=0o700)

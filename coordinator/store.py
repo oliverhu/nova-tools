@@ -13,7 +13,7 @@ import time
 import uuid
 from pathlib import Path
 from .approvals import approval_payload, approval_id
-from .workers import WORKERS
+from .workers import WORKERS, INITIALLY_PAUSED_WORKERS
 from .outcomes import finish_outcome
 from .attempt_accounting import BINDING, correction_payload
 from .attempt_allowances import allowance_payload
@@ -179,7 +179,8 @@ class Store:
                 self.event(db, "service", "legacy-lock-retired", lock["task_id"], encoded(dict(lock)))
             db.execute("DELETE FROM locks")
             for name in WORKERS:
-                db.execute("INSERT OR IGNORE INTO workers(id) VALUES(?)", (name,))
+                db.execute("INSERT OR IGNORE INTO workers(id,paused) VALUES(?,?)",
+                           (name, int(name in INITIALLY_PAUSED_WORKERS)))
 
     @contextlib.contextmanager
     def connection(self):

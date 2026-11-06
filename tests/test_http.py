@@ -412,6 +412,30 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(403,self.request('/api/repositories/observe',body=observation)[0])
         self.assertEqual(200,self.request('/api/repositories/observe','oliver-mini',observation)[0])
 
+    def test_mini_guests_are_known_but_cannot_self_enable_or_claim_before_readiness(self):
+        from coordinator.workers import MINI_VM_WORKERS
+        for index, worker in enumerate(MINI_VM_WORKERS):
+            self.tokens[worker] = ('m' if index == 0 else 'n') * 40
+            self.assertEqual(200, self.request('/api/worker/pulse', worker, {
+                'capacity': {'cpus': 5, 'memory_gb': 8, 'disk_gb': 100}})[0])
+            code, raw, _ = self.request('/api/tasks', 'admin', {'request_key': 'mini-http-' + str(index),
+                'title': 'Guest work', 'requirements': {'worker': worker}})
+            self.assertEqual(200, code); ident = json.loads(raw)['id']
+            _, raw, _ = self.request('/api/worker/claim', worker, {'task_id': ident})
+            self.assertIsNone(json.loads(raw)['task'])
+            endpoint = '/api/workers/' + worker + '/state'
+            ready = {'paused': False, 'reason': 'Verified worker-specific onboarding fixture'}
+            self.assertEqual(403, self.request(endpoint, worker, ready)[0])
+            self.assertEqual(200, self.request(endpoint, 'admin', ready)[0])
+            _, raw, _ = self.request('/api/worker/claim', worker, {'task_id': ident})
+            claim = json.loads(raw); self.assertEqual(worker, claim['task']['owner'])
+            body = {'generation': 1, 'step': 0, 'claim_token': claim['claim_token'],
+                    'outcome': 'completed', 'receipt': {'summary': 'Owned worker result', 'execution_stopped': True}}
+            foreign = MINI_VM_WORKERS[1 - index]
+            self.tokens.setdefault(foreign, ('m' if index else 'n') * 40)
+            self.assertEqual(409, self.request('/api/tasks/' + ident + '/finish', foreign, body)[0])
+            self.assertEqual(200, self.request('/api/tasks/' + ident + '/finish', worker, body)[0])
+
     def test_ios_only_route_requires_admin_preserves_mac_baseline_and_finishes_under_own_claim(self):
         import time
         from coordinator.ios_release import STUDIO, NOVA

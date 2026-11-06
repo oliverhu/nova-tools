@@ -580,6 +580,24 @@ client and deployed capability rather than an older copied server-source cache.
 
 ## Studio migration
 
+The additional Mini VM identities are `oliverhu-mini-vm1` and `oliverhu-mini-vm2`.
+New records for these identities start **paused**. Reporter pulses and service
+restarts do not enable them. The retired `oliver-mini` host identity and every
+existing worker's pause/claim state remain separate and unchanged. Each new VM
+needs its own distinct random credential in the existing private service Secret;
+never clone a Studio client config, token, claim or approval journal. Bootstrap
+selects the requested credential on the cluster host so the guest receives only
+its own token. Use `--no-start` during onboarding.
+
+After the setup owner verifies actual storage, toolchain, permissions, identity
+and current instructions, Coordinator may enable that exact VM through the
+existing administrator `POST /api/workers/WORKER/state` with `paused: false` and
+the readiness-receipt reference in `reason`. Until then, both explicit and
+unfiltered claims are refused even if capacity is reported. The planned 5 CPU /
+8 GiB guest allocation is configuration, not proof of measured available capacity
+or readiness. Preserve any unrelated dispatch hold and existing engine/publisher
+requirements. Enrollment is not VM provisioning or feature acceptance.
+
 The service recognizes `oliverhu-mac-studio`, `oliverhu-mac-studio-vm1`,
 and `oliverhu-mac-studio-vm2` in addition to the two legacy identities. Enroll a
 distinct random credential for each new worker in the existing private service
