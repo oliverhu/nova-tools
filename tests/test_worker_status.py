@@ -63,6 +63,7 @@ class LocalCLIStatusTests(unittest.TestCase):
 
     def test_missing_state_foreign_identity_or_symlink_is_unavailable(self):
         self.assertFalse(collect_cli_status(FIRST, self.root/'missing')['available'])
+        self.assertFalse(collect_cli_status(FIRST, self.root)['available'])
         self.state(worker=SECOND)
         self.assertFalse(collect_cli_status(FIRST, self.root)['available'])
         (self.run/'state.json').unlink()
