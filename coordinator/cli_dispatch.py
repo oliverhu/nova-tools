@@ -292,7 +292,20 @@ def main():
                 proof = json.loads(proof_path.read_text())
                 if unclaimed or approved: readback = proof
                 else: wait_receipt = proof
+                if not unclaimed and not approved and task.get('dependencies') != finish.get('dependencies'):
+                    path = run_dir/'task-readback.json'
+                    if not path.is_file() or path.resolve() != path:
+                        raise ValueError('Original canonical wait readback required')
+                    readback = json.loads(path.read_text())
             validate_settlement(prior, task, finish, note, config['worker'], report, wait_receipt, readback)
+            if wait_receipt is not None and task.get('dependencies') != finish.get('dependencies'):
+                if runs[-1]['run_id'] != prior['run_id']:
+                    raise ValueError('Later local run prevents historical settlement')
+                settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback,
+                                     operation='audited_wait', wait_receipt=wait_receipt)
+                print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
+                                  'task_status_unchanged': task['status']}))
+                return
             if task.get('status') == 'queued' and finish.get('status') == 'pending_external_approval':
                 if runs[-1]['run_id'] != prior['run_id']:
                     raise ValueError('A later local run exists; do not settle historical approval work')
@@ -433,7 +446,10 @@ def validate_settlement(run, task, finish, note, worker, report=None, wait_recei
         elif finish.get('status') == 'pending_external_approval':
             validate_approved_wait(run, task, finish, report, readback, note, worker)
         else:
-            validate_queued_wait(run, task, finish, report, wait_receipt, worker)
+            if task.get('dependencies') != finish.get('dependencies'):
+                validate_audited_wait(run, task, finish, report, wait_receipt, readback, note, worker)
+            else:
+                validate_queued_wait(run, task, finish, report, wait_receipt, worker)
     elif (task.get('status') not in ('blocked', 'failed', 'pending_external_approval')
             or task.get('owner') != worker or finish.get('id') != task.get('id')
             or finish.get('generation') != task.get('generation') or finish.get('status') != task.get('status')
@@ -538,17 +554,23 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
         raise ValueError('Matching approval event without later claims or contradictions required')
 
 
-def settle_approved_wait(run_dir, prior, note, finish, report, readback):
+def settle_approved_wait(run_dir, prior, note, finish, report, readback, operation='approved_wait', wait_receipt=None):
     """Called under worker.lock; keep byte-exact originals and append a local audit."""
     paths = [run_dir/n for n in ('state.json', 'finish-response.json', 'worker-report.json', 'task-readback.json')]
-    backup = run_dir/'approved-wait-state-before.json'; audit = run_dir/'dispatch-settlement.json'
+    backup = run_dir/(operation.replace('_', '-')+'-state-before.json'); audit = run_dir/'dispatch-settlement.json'
+    values = [prior, finish, report, readback]
+    forbidden = []
+    if operation == 'audited_wait':
+        paths.append(run_dir/'wait-receipt.json'); values.append(wait_receipt)
+    else:
+        forbidden.append(run_dir/'wait-receipt.json')
     if (any(not p.is_file() or p.resolve() != p for p in paths)
-            or any(p.exists() or p.is_symlink() for p in (backup, audit, run_dir/'wait-receipt.json'))):
+            or any(p.exists() or p.is_symlink() for p in (backup, audit, *forbidden))):
         raise ValueError('Canonical original approval evidence without existing settlement/wait required')
     originals = {p: p.read_bytes() for p in paths}
-    if any(json.loads(originals[p]) != value for p, value in zip(paths, (prior, finish, report, readback))):
+    if any(json.loads(originals[p]) != value for p, value in zip(paths, values)):
         raise ValueError('Original approval evidence changed before settlement')
-    record = {**note, 'operation': 'approved_wait', 'recorded_at': time.time(), 'prior_state': prior,
+    record = {**note, 'operation': operation, 'recorded_at': time.time(), 'prior_state': prior,
               'original_evidence_sha256': {p.name: hashlib.sha256(raw).hexdigest() for p, raw in originals.items()}}
     for path, raw in ((backup, originals[paths[0]]), (audit, json.dumps(record, indent=2).encode())):
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -688,6 +710,46 @@ def validate_unclaimed_stop(run, task, marker, report, readback, worker):
         raise ValueError('Fresh API must match this run\'s retained unclaimed readback')
 
 
+def validate_audited_wait(run, task, response, report, wait_receipt, readback, note, worker):
+    """One authenticated admin dependency disposition may follow an owning wait."""
+    if not isinstance(readback, dict):
+        raise ValueError('Original owning wait readback required')
+    validate_queued_wait(run, readback, response, report, wait_receipt, worker)
+    keys = ('id', 'generation', 'step', 'status', 'owner', 'last_owner', 'requirements', 'result',
+            'receipts', 'approval', 'fix_attempts_used', 'total_fix_attempts', 'attempt_base',
+            'attempts_host', 'reassignment_count', 'attempt_allowance', 'attempt_exception', 'steps', 'request_key')
+    if (any(k not in readback or readback[k] != task.get(k) for k in keys)
+            or run.get('completion_verified') is not False or run.get('cli_exit_code') != 0
+            or run.get('queued_generation') != task['generation'] - 1
+            or task.get('requirements', {}).get('worker') != worker
+            or not isinstance(task.get('dependencies'), list)):
+        raise ValueError('Audited wait must preserve exact owner, generation, constraints and counters')
+    for value in (run, report, report.get('cleanup', {}), wait_receipt, note):
+        if (value.get('human_stop') is True or value.get('approval_request')
+                or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []
+                or any(k in value and value[k] is not True for k in ('execution_stopped', 'external_state_checked', 'input_settled'))):
+            raise ValueError('Contradictory cleanup or holds prevent audited wait settlement')
+    old = readback.get('events'); events = task.get('events')
+    if not old or not isinstance(events, list) or events[:-1] != old or len(events) != len(old)+1:
+        raise ValueError('Exactly one later transition without claims or other changes required')
+    previous, event = old[-1], events[-1]
+    try:
+        detail = json.loads(event.get('detail', ''))
+    except (ValueError, TypeError):
+        raise ValueError('Recorded admin wait JSON required') from None
+    if (previous.get('kind') != 'waiting' or previous.get('actor') != worker
+            or event.get('kind') != 'waiting' or event.get('actor') != 'admin'
+            or event.get('task_id') != task['id'] or previous.get('task_id') != task['id']
+            or type(event.get('id')) is not int or type(previous.get('id')) is not int
+            or event['id'] <= previous['id']
+            or any(type(e.get('at')) not in (int, float) or not math.isfinite(e['at']) for e in (previous, event))
+            or event['at'] < previous['at'] or not isinstance(detail, dict)
+            or set(detail) != {'worker', 'dependencies', 'evidence'}
+            or detail['worker'] != worker or detail['dependencies'] != task['dependencies']
+            or not isinstance(detail['evidence'], str) or not detail['evidence'].strip()):
+        raise ValueError('Exact authenticated admin waiting disposition required')
+
+
 def validate_queued_wait(run, task, response, report, wait_receipt, worker):
     """A real owning defer is unowned and keeps stop evidence outside result."""
     if (run.get('task') != task.get('id') or run.get('worker') != worker
@@ -703,7 +765,8 @@ def validate_queued_wait(run, task, response, report, wait_receipt, worker):
     cleanup = report.get('cleanup', {}) if isinstance(report, dict) else {}
     if (not isinstance(report, dict) or not isinstance(wait_receipt, dict) or not isinstance(cleanup, dict)
             or any(value.get('task') != task['id'] or value.get('generation') != task['generation']
-                   or value.get('worker') != worker
+                   or value.get('worker', value.get('worker_id')) != worker
+                   or ('worker_id' in value and value['worker_id'] != worker)
                    or value.get('acceptance_complete') is True
                    or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []
                    for value in (report, wait_receipt))
