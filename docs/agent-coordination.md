@@ -7,6 +7,18 @@ Coordinator-retesting descriptions. Current explicit human instructions and genu
 task-specific holds still take precedence. This document does not change live
 credentials, schedules, task ownership or deployment.
 
+## Suspended large-text checks
+
+Effective **2026-11-06**, the human suspended large-text, largest-text,
+accessibility-size and Dynamic Type expansion checks across development,
+acceptance, release and repair until a further human update. Apply this to
+existing tasks and older acceptance/checklists. Record affected checks as
+**skipped by human policy**, never passed, and remove those checks as completion,
+merge, release or repair gates during the suspension. Continue unrelated checks;
+preserve product behavior and prior evidence. No OS/tool permission or bypass of
+a permission denial is granted. Coordinator synchronizes the managed skill and
+role policy and tracks actual adoption; Dispatcher uses the updated scope.
+
 ## Roles
 
 | Actor | Responsibility | Boundary |
