@@ -83,6 +83,17 @@ are not automatically resumed. Historical failed-run evidence remains intact.
 and the last worker message without starting a run. It can query several aliases
 in parallel and makes no scheduling or claim changes.
 
+A fully settled blocked task must not occupy the whole worker. After reading the
+actual owner evidence, Dispatcher may use `settle --run-id ID --note-file RECEIPT`
+to admit other work. This changes only local dispatch admission, never queue
+ownership, outcome, approvals or retry counts. The private JSON receipt must bind
+`run_id`, `task`, `generation`, `worker`, positive `execution_stopped`,
+`external_state_checked`, `input_settled`, `unknown_operations: []` and descriptive
+`cleanup_evidence`. The actual owning finish and fresh non-running API state must
+match. Missing evidence or unknown effects keep admission held. A later eligible
+blocked retry uses the service's actual readiness and current owner; the worker
+reads prior receipts and makes a concrete correction before repeating operations.
+
 1. Coordinator submits once with a stable `request_key`, concrete acceptance and
    real dependency IDs. Report the **service-returned task ID** to the user.
 2. Coordinator may assign directly; Dispatcher handles eligible idle wake-ups

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from coordinator.cli_dispatch import check_account, environment, prior_finish, validate_task, verify_completion, save
+from coordinator.cli_dispatch import check_account, environment, prior_finish, validate_settlement, validate_task, verify_completion, save
 
 
 class DispatchTests(unittest.TestCase):
@@ -86,6 +86,27 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(prior_finish(root, child), root/parent['run_id']/'finish-response.json')
             for delta in ({'worker': 'other'}, {'task': 'other'}):
                 self.assertIsNone(prior_finish(root, {**child, **delta}))
+
+    def test_settled_block_does_not_consume_worker_or_erase_task_state(self):
+        run = {'run_id': 'a'*32}
+        task = {'id': 'task', 'generation': 2, 'status': 'blocked', 'owner': 'mini',
+                'result': {'execution_stopped': True}}
+        note = {'run_id': run['run_id'], 'task': 'task', 'generation': 2, 'worker': 'mini',
+                'execution_stopped': True, 'external_state_checked': True, 'input_settled': True,
+                'unknown_operations': [], 'cleanup_evidence': 'Actual owner receipt/readback and input cleanup inspected'}
+        validate_settlement(run, task, task, note, 'mini')
+        self.assertEqual(task['status'], 'blocked')
+        for delta in ({'unknown_operations': ['unknown input']}, {'input_settled': False}, {'generation': 1}, {'cleanup_evidence': ''}):
+            with self.assertRaises(ValueError):
+                validate_settlement(run, task, task, {**note, **delta}, 'mini')
+
+    def test_service_eligible_blocked_retry_preserves_owner_and_stop_gate(self):
+        task = {**self.task, 'status': 'blocked', 'owner': 'mini', 'last_owner': 'mini',
+                'ready': True, 'result': {'execution_stopped': True}}
+        validate_task(task, self.state, self.config)
+        for delta in ({'ready': False}, {'last_owner': 'other'}, {'result': {}}):
+            with self.assertRaises(ValueError):
+                validate_task({**task, **delta}, self.state, self.config)
 
 
 if __name__ == '__main__':

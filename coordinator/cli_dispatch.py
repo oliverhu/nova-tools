@@ -92,8 +92,12 @@ def rpc_account(binary):
 
 
 def validate_task(task, state, config):
-    if task.get('status') != 'queued' or task.get('owner'):
-        raise ValueError('Only an unowned queued task can be woken; reconcile prior runs separately')
+    retry_ready = task.get('status') == 'blocked' and task.get('ready') is True
+    if not retry_ready and (task.get('status') != 'queued' or task.get('owner')):
+        raise ValueError('Only queued or service-eligible blocked work can be woken')
+    if retry_ready and ((task.get('last_owner') != config['worker'] and task.get('next_worker') != config['worker'])
+                        or task.get('result', {}).get('execution_stopped') is not True):
+        raise ValueError('Blocked retries need the existing owning worker and stopped execution')
     if task.get('task_type') == 'publish' or task.get('compute') == 'heavy':
         raise ValueError('This CLI route is not admitted for publishing or heavy engine work')
     if any(t.get('status') == 'running' and t.get('owner') == config['worker'] for t in state['tasks']):
@@ -204,7 +208,7 @@ def verify_completion(task, run_dir):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['status', 'wake', 'resume', '_run'])
+    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', '_run'])
     parser.add_argument('--task')
     parser.add_argument('--run-id')
     parser.add_argument('--lock-fd', type=int)
@@ -256,6 +260,21 @@ def main():
             return
         if busy:
             raise ValueError('CLI worker is busy; no duplicate wake')
+        if args.operation == 'settle':
+            prior = next((r for r in runs if r['run_id'] == args.run_id), None)
+            if not prior or prior['status'] != 'needs_attention' or prior.get('cli_exit_code') is None or not args.note_file:
+                raise ValueError('Settlement requires an ended run and explicit observed cleanup receipt')
+            task = Client().request('/api/tasks/'+prior['task'])
+            finish_path = prior_finish(ROOT, prior)
+            finish = json.loads(finish_path.read_text()) if finish_path else {}
+            note = json.loads(args.note_file.read_text())
+            validate_settlement(prior, task, finish, note, config['worker'])
+            # Audit local admission only. Never finish/reassign/retry a service task.
+            save(ROOT/prior['run_id']/'dispatch-settlement.json', {**note, 'recorded_at': time.time()})
+            save(ROOT/prior['run_id']/'state.json', {**prior, 'prior_status': prior['status'], 'status': 'settled'})
+            print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
+                              'task_status_unchanged': task['status']}))
+            return
         if args.operation == 'resume':
             prior = next((r for r in runs if r['run_id'] == args.run_id), None)
             if not prior or prior['status'] != 'needs_attention' or not args.note_file:
@@ -316,7 +335,7 @@ Explicit correction/continuation instruction:
                  'status': 'continued', 'continued_by': run_id})
             print(json.dumps(record))
             return
-        if any(r['status'] not in ('completed', 'continued') for r in runs):
+        if any(r['status'] not in ('completed', 'continued', 'settled') for r in runs):
             raise ValueError('Prior run needs reconciliation; no automatic replay')
         if not re.fullmatch('[a-f0-9]{16}', args.task or ''):
             raise ValueError('An exact service task ID is required')
@@ -372,6 +391,20 @@ def prior_finish(root, record):
             return None
         record = ancestor
     return None
+
+
+def validate_settlement(run, task, finish, note, worker):
+    if (task.get('status') not in ('blocked', 'failed', 'pending_external_approval')
+            or task.get('owner') != worker or finish.get('id') != task.get('id')
+            or finish.get('generation') != task.get('generation') or finish.get('status') != task.get('status')
+            or task.get('result', {}).get('execution_stopped') is not True):
+        raise ValueError('Owning finish and fresh stopped task state must agree')
+    if (note.get('run_id') != run['run_id'] or note.get('task') != task['id']
+            or note.get('generation') != task['generation'] or note.get('worker') != worker
+            or any(note.get(k) is not True for k in ('execution_stopped','external_state_checked','input_settled'))
+            or note.get('unknown_operations') != []
+            or not isinstance(note.get('cleanup_evidence'), str) or not note['cleanup_evidence'].strip()):
+        raise ValueError('Positive exact-run cleanup/input/external-state evidence is required')
 
 
 def spawn(record, run_dir, lock_fd):
