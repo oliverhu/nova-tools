@@ -94,6 +94,19 @@ match. Missing evidence or unknown effects keep admission held. A later eligible
 blocked retry uses the service's actual readiness and current owner; the worker
 reads prior receipts and makes a concrete correction before repeating operations.
 
+A genuine queued dependency wait can also settle local admission. Its owning
+`nova-coord wait` response may be retained at `finish-response.json`; that filename
+does not make it a successful finish. Preserve the actual input at
+`wait-receipt.json` and the same run's `worker-report.json`. The adapter requires
+an ended run, matching task/generation/step and last owner, an unowned queued
+response with unchanged nonempty dependencies, a stopped worker report and
+stopped/checked wait input. The fresh API must contain the matching owning
+`waiting` receipt and worker audit event. `result` may remain empty after a defer.
+The same positive cleanup/input/external-state note is still required. Missing,
+foreign, stale or contradictory evidence keeps admission held. Settlement never
+completes or retries that task, changes its dependencies/counters/holds, resumes
+its old model session or starts the next task; Dispatcher selects new work.
+
 1. Coordinator submits once with a stable `request_key`, concrete acceptance and
    real dependency IDs. Report the **service-returned task ID** to the user.
 2. Coordinator may assign directly; Dispatcher handles eligible idle wake-ups

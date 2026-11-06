@@ -8,6 +8,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -147,6 +148,9 @@ the exact finish response to {run_dir}/finish-response.json and fresh `show` rea
 {run_dir}/task-readback.json. Never declare completion unless both match actual acceptance.
 Write a concise worker report to {run_dir}/worker-report.json containing task/generation,
 worker, outcome, evidence paths, source commits when applicable, remaining limits and cleanup.
+For a supported dependency wait, retain its actual input at {run_dir}/wait-receipt.json
+and its actual defer response at the requested finish-response.json path. Report it as a
+queued wait, never a successful finish; save the fresh task readback and stopped cleanup.
 The existing Dispatcher reads these files and the authoritative API for Coordinator reporting;
 you have no desktop cross-account chat tools and must not invent them. Stop after this exact task;
 the existing Dispatcher selects subsequent eligible work with current context/readiness.
@@ -266,9 +270,19 @@ def main():
                 raise ValueError('Settlement requires an ended run and explicit observed cleanup receipt')
             task = Client().request('/api/tasks/'+prior['task'])
             finish_path = prior_finish(ROOT, prior)
-            finish = json.loads(finish_path.read_text()) if finish_path else {}
             note = json.loads(args.note_file.read_text())
-            validate_settlement(prior, task, finish, note, config['worker'])
+            report = wait_receipt = None
+            if task.get('status') == 'queued':
+                run_dir = ROOT/prior['run_id']
+                report_path = run_dir/'worker-report.json'
+                wait_path = run_dir/'wait-receipt.json'
+                if (finish_path != run_dir/'finish-response.json'
+                        or any(not p.is_file() or p.resolve() != p for p in (finish_path, report_path, wait_path))):
+                    raise ValueError('Queued settlement requires this run\'s actual wait input, response and worker report')
+                report = json.loads(report_path.read_text())
+                wait_receipt = json.loads(wait_path.read_text())
+            finish = json.loads(finish_path.read_text()) if finish_path else {}
+            validate_settlement(prior, task, finish, note, config['worker'], report, wait_receipt)
             # Audit local admission only. Never finish/reassign/retry a service task.
             save(ROOT/prior['run_id']/'dispatch-settlement.json', {**note, 'recorded_at': time.time()})
             save(ROOT/prior['run_id']/'state.json', {**prior, 'prior_status': prior['status'], 'status': 'settled'})
@@ -325,6 +339,8 @@ Never resume a pending external approval or bypass automatic approval review rej
 Save your new exact finish response to {run_dir}/finish-response.json and fresh show to
 {run_dir}/task-readback.json; write {run_dir}/worker-report.json with actual result, evidence,
 remaining limits and cleanup. Follow the original acceptance; no publication or other task.
+For a supported dependency wait, retain the actual wait input at {run_dir}/wait-receipt.json
+and actual defer response at finish-response.json; report a queued wait, not completion.
 Explicit correction/continuation instruction:
 {note}
 '''
@@ -393,8 +409,10 @@ def prior_finish(root, record):
     return None
 
 
-def validate_settlement(run, task, finish, note, worker):
-    if (task.get('status') not in ('blocked', 'failed', 'pending_external_approval')
+def validate_settlement(run, task, finish, note, worker, report=None, wait_receipt=None):
+    if task.get('status') == 'queued':
+        validate_queued_wait(run, task, finish, report, wait_receipt, worker)
+    elif (task.get('status') not in ('blocked', 'failed', 'pending_external_approval')
             or task.get('owner') != worker or finish.get('id') != task.get('id')
             or finish.get('generation') != task.get('generation') or finish.get('status') != task.get('status')
             or task.get('result', {}).get('execution_stopped') is not True):
@@ -405,6 +423,58 @@ def validate_settlement(run, task, finish, note, worker):
             or note.get('unknown_operations') != []
             or not isinstance(note.get('cleanup_evidence'), str) or not note['cleanup_evidence'].strip()):
         raise ValueError('Positive exact-run cleanup/input/external-state evidence is required')
+
+
+def validate_queued_wait(run, task, response, report, wait_receipt, worker):
+    """A real owning defer is unowned and keeps stop evidence outside result."""
+    if (run.get('task') != task.get('id') or run.get('worker') != worker
+            or run.get('status') != 'needs_attention' or type(run.get('cli_exit_code')) is not int
+            or type(run.get('ended_at')) not in (int, float) or not math.isfinite(run['ended_at']) or run['ended_at'] <= 0
+            or task.get('owner') is not None or task.get('last_owner') != worker
+            or type(task.get('generation')) is not int or task['generation'] < 1
+            or type(task.get('step')) is not int or task['step'] < 0
+            or not isinstance(task.get('dependencies'), list) or not task['dependencies']
+            or any(key not in response or response[key] != task.get(key) for key in (
+                'id', 'generation', 'step', 'status', 'owner', 'last_owner', 'dependencies', 'requirements'))):
+        raise ValueError('Queued settlement requires this ended run and matching unowned dependency-wait response')
+    if (not isinstance(report, dict) or not isinstance(wait_receipt, dict)
+            or any(value.get('task') != task['id'] or value.get('generation') != task['generation']
+                   or value.get('worker') != worker or value.get('outcome') not in ('queued', 'waiting')
+                   or value.get('execution_stopped') is not True
+                   or value.get('acceptance_complete') is True
+                   or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []
+                   for value in (report, wait_receipt))
+            or wait_receipt.get('external_state_checked') is not True
+            or wait_receipt.get('dependencies') != task['dependencies']
+            or not isinstance(wait_receipt.get('evidence'), str) or not wait_receipt['evidence'].strip()):
+        raise ValueError('Owning worker report and actual stopped/checked wait input must match')
+    evidence = wait_receipt['evidence']
+    receipts = []
+    for receipt in task.get('receipts', []):
+        envelope = receipt.get('receipt', {})
+        body = envelope.get('receipt', {})
+        if (receipt.get('task_id') == task['id'] and receipt.get('generation') == task['generation']
+                and receipt.get('step') == task['step'] and envelope.get('outcome') == 'waiting'
+                and body.get('execution_stopped') is True and body.get('external_state_checked') is True
+                and body.get('summary') == evidence):
+            receipts.append(receipt)
+    if len(receipts) != 1:
+        raise ValueError('Fresh API must contain the exact owning stopped/checked waiting receipt')
+    for event in task.get('events', []):
+        if event.get('kind') != 'waiting' or event.get('actor') != worker or event.get('task_id') != task['id']:
+            continue
+        try:
+            detail = json.loads(event.get('detail', ''))
+        except (ValueError, TypeError):
+            continue
+        if (isinstance(detail, dict) and detail.get('dependencies') == task['dependencies']
+                and detail.get('worker') == task.get('requirements', {}).get('worker')
+                and detail.get('evidence') == evidence
+                and isinstance(event.get('at'), (int, float))
+                and isinstance(receipts[0].get('at'), (int, float))
+                and event['at'] >= receipts[0]['at']):
+            return
+    raise ValueError('Fresh API must retain the matching owning waiting audit event')
 
 
 def spawn(record, run_dir, lock_fd):
