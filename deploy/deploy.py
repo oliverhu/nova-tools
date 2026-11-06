@@ -132,8 +132,11 @@ def main():
     parser.add_argument("--host",default="pi@192.168.2.13")
     parser.add_argument("--apply",action="store_true")
     parser.add_argument('--code-only',action='store_true',help='Update source on an existing deployment, preserving live networking and TLS configuration')
+    parser.add_argument('--skip-client-package',action='store_true',help='With --code-only, preserve the distributed client bundle for separate publication from verified client source')
     parser.add_argument('--prepare-tls',action='store_true',help='Prepare certificates and public trust before changing the running service')
     args=parser.parse_args()
+    if args.skip_client_package and (not args.code_only or args.prepare_tls):
+        parser.error('--skip-client-package requires --code-only without --prepare-tls')
     cluster=Cluster(args.host)
     resources,digest=manifests()
     runtime=ROOT/".runtime";runtime.mkdir(mode=0o700,exist_ok=True)
@@ -151,7 +154,8 @@ def main():
         patch=[{'op':'test','path':'/metadata/resourceVersion','value':current['metadata']['resourceVersion']},
                {'op':'replace','path':f'/spec/template/spec/volumes/{index}/configMap','value':next(v['configMap'] for v in deployment['spec']['template']['spec']['volumes'] if v['name']=='source')}]
         cluster.run(['-n',NS,'patch','deployment',NS,'--type=json','--patch-file=/dev/stdin'],json.dumps(patch).encode())
-        subprocess.run([sys.executable,str(ROOT/'scripts/package-client.py'),'--host',args.host],check=True)
+        if not args.skip_client_package:
+            subprocess.run([sys.executable,str(ROOT/'scripts/package-client.py'),'--host',args.host],check=True)
         print('Updated source '+code['metadata']['name']+'; networking and TLS preserved',flush=True)
         return
     cluster.apply(obj("Namespace",NS,namespace=None))
