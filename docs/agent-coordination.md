@@ -197,9 +197,11 @@ or acknowledgement chain is required.
 The existing Dispatcher wakes every 15 minutes. Lightweight capacity/branch
 reporters remain active. Independent legacy worker polls remain paused. Onboarding
 does not create per-worker/per-task timers. A separate existing service timer
-checks fresh main observations every hour and creates one immutable release task
-per new target. No new changes means no release. Do not add a second hourly chat
-automation for the same repository.
+checks fresh main observations every hour. With publication policy OFF it creates
+one immutable release task per new target; after explicit repository activation,
+the audited coalescing rules below retain the desired head behind real barriers
+and admit at most one actionable publication. No new changes means no release.
+Do not add a second hourly chat automation for the same repository.
 
 The service currently allows 20 fix attempts per host assignment and six host
 reassignments. Automatic technical retries stay with the current host until its
@@ -305,3 +307,22 @@ Use the existing coordination and dispatcher activity for this upkeep. No new
 timer, worker poll, app restart or service deployment is required. This does not
 authorize Coordinator to retest developer output; content synchronization and
 developer acceptance remain separate responsibilities.
+
+## Conditional publication coalescing
+
+The legacy per-commit hourly queue remains in effect until an administrator
+explicitly activates the repository's audited publication policy against a fresh
+CAS plan. Source deployment alone does not enable it. After activation, existing
+hourly scheduling coalesces only positively proven unstarted ancestor targets;
+all dependencies and restrictive requirements carry forward. Active, partial,
+unknown, approval-held and unreviewed historical claims remain barriers, with
+later commits recorded as desired state. No-change adds no task. Immutable targets,
+receipts, counters and original stops remain intact; publication still needs the
+actual qualified owner's separate claim and delivery checks. Explicit upload-only
+authority is not converted into a combined release.
+
+README documents the exact plan/apply/review APIs. Coordinator owns the qualified
+skill/client-bundle revision, synchronization and per-actor readbacks separately
+from the minimal live service pin. Existing observer support must provide actual
+Git ancestry; old reporters cannot qualify it. Do not add another timer, broad
+cancellation, manual publication or approval bypass.
