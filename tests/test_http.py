@@ -53,6 +53,21 @@ class HTTPTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'",headers["Content-Security-Policy"])
         self.assertEqual(404,self.request("/../coordinator/store.py","admin")[0])
 
+    def test_publication_policy_plan_apply_admin_auth_cas_and_audit(self):
+        self.server.store.configure_repository({'repository':'owner/repo','published_commit':'a'*40})
+        for actor in (None,'oliver-mac','oliver-mini'):
+            for action in ('plan','apply','review-unstarted'):
+                self.assertEqual(403,self.request('/api/releases/policy/'+action,actor,{'repository':'owner/repo'})[0])
+        code,raw,_=self.request('/api/releases/policy/plan','admin',{'repository':'owner/repo'})
+        self.assertEqual(200,code);plan=json.loads(raw)
+        body={'repository':'owner/repo','fingerprint':plan['fingerprint'],'execution_stopped':True,
+              'external_state_checked':True,'evidence':'Reviewed actual source and current external state; preserve existing histories'}
+        code,raw,_=self.request('/api/releases/policy/apply','admin',body)
+        self.assertEqual(200,code);audit=json.loads(raw)['audit_id']
+        code,raw,_=self.request('/api/releases/policy/apply','admin',body)
+        self.assertEqual(200,code);self.assertEqual(audit,json.loads(raw)['audit_id']);self.assertTrue(json.loads(raw)['replayed'])
+        self.assertEqual(400,self.request('/api/releases/policy/apply','admin',{**body,'execution_stopped':False})[0])
+
     def test_worker_cannot_reconcile(self):
         self.assertEqual(403,self.request("/api/tasks/1234567890abcdef/reconcile","oliver-mini",{})[0])
 
