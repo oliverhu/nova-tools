@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import selectors
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -297,7 +298,7 @@ def main():
                     if not path.is_file() or path.resolve() != path:
                         raise ValueError('Original canonical wait readback required')
                     readback = json.loads(path.read_text())
-            validate_settlement(prior, task, finish, note, config['worker'], report, wait_receipt, readback)
+            cleanup_proof = validate_settlement(prior, task, finish, note, config['worker'], report, wait_receipt, readback)
             if wait_receipt is not None and task.get('dependencies') != finish.get('dependencies'):
                 if runs[-1]['run_id'] != prior['run_id']:
                     raise ValueError('Later local run prevents historical settlement')
@@ -309,7 +310,7 @@ def main():
             if task.get('status') == 'queued' and finish.get('status') == 'pending_external_approval':
                 if runs[-1]['run_id'] != prior['run_id']:
                     raise ValueError('A later local run exists; do not settle historical approval work')
-                settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback)
+                settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback, cleanup_proof=cleanup_proof)
                 print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
                                   'task_status_unchanged': task['status']}))
                 return
@@ -440,11 +441,12 @@ def prior_finish(root, record):
 
 
 def validate_settlement(run, task, finish, note, worker, report=None, wait_receipt=None, readback=None):
+    cleanup_proof = None
     if task.get('status') == 'queued':
         if finish.get('finish_invoked') is False:
             validate_unclaimed_stop(run, task, finish, report, readback, worker)
         elif finish.get('status') == 'pending_external_approval':
-            validate_approved_wait(run, task, finish, report, readback, note, worker)
+            cleanup_proof = validate_approved_wait(run, task, finish, report, readback, note, worker)
         else:
             if task.get('dependencies') != finish.get('dependencies'):
                 validate_audited_wait(run, task, finish, report, wait_receipt, readback, note, worker)
@@ -461,6 +463,20 @@ def validate_settlement(run, task, finish, note, worker, report=None, wait_recei
             or note.get('unknown_operations') != []
             or not isinstance(note.get('cleanup_evidence'), str) or not note['cleanup_evidence'].strip()):
         raise ValueError('Positive exact-run cleanup/input/external-state evidence is required')
+    return cleanup_proof
+
+
+def read_cleanup_proof(path):
+    if path.resolve() != path:
+        raise ValueError('Canonical same-run cleanup proof required')
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+        s = os.fstat(stream.fileno())
+        if not stat.S_ISREG(s.st_mode):
+            raise ValueError('Regular cleanup proof required')
+        raw = stream.read(1048577)
+        if len(raw) > 1048576:
+            raise ValueError('Cleanup proof too large')
+    return raw, (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
 
 
 def validate_approved_wait(run, task, finish, report, readback, note, worker):
@@ -496,11 +512,27 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
     if any(k not in finish or k not in readback or finish[k] != readback[k] or finish[k] != task.get(k)
            for k in immutable) or readback.get('receipts') != task.get('receipts'):
         raise ValueError('Original target, constraints, counters and receipt history must remain unchanged')
-    result = task.get('result'); cleanup = report.get('cleanup')
+    result = task.get('result'); cleanup = report.get('cleanup'); cleanup_proof = None
+    if isinstance(cleanup, str):
+        path = ROOT/run['run_id']/'stopped-cleanup.json'
+        if (not cleanup.strip() or result.get('cleanup') != cleanup
+                or any(not isinstance(value.get('evidence_paths'), list)
+                       or value['evidence_paths'].count(str(path)) != 1 for value in (report, result))):
+            raise ValueError('Both originals must reference the exact same-run cleanup proof')
+        raw, identity = read_cleanup_proof(path)
+        proof = json.loads(raw)
+        if (not isinstance(proof, dict) or proof.get('task') != task['id']
+                or type(proof.get('generation')) is not int or proof['generation'] != task['generation']
+                or proof.get('worker') != worker or proof.get('cleanup') != cleanup
+                or any(proof.get(k) is not True for k in ('execution_stopped', 'external_state_checked', 'allOwnedCommandsReaped', 'ownedChildrenClean'))
+                or proof.get('inputDispatched') is not False):
+            raise ValueError('Exact stopped/checked same-run cleanup identity and no-input evidence required')
+        cleanup = proof
+        cleanup_proof = (path, raw, identity)
     if (not isinstance(result, dict) or not isinstance(cleanup, dict)
             or result.get('acceptance_complete') is not False
             or report.get('summary') != result.get('summary')
-            or ('cleanup' in result and result['cleanup'] != cleanup)
+            or (cleanup_proof is None and 'cleanup' in result and result['cleanup'] != cleanup)
             or any(value.get(k) is not True for value in (result, cleanup)
                    for k in ('execution_stopped', 'external_state_checked'))):
         raise ValueError('Positive original stopped/checked incomplete acceptance evidence required')
@@ -552,9 +584,10 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
             or type(pending.get('id')) is not int or type(applied.get('id')) is not int
             or applied['id'] <= pending['id']):
         raise ValueError('Matching approval event without later claims or contradictions required')
+    return cleanup_proof
 
 
-def settle_approved_wait(run_dir, prior, note, finish, report, readback, operation='approved_wait', wait_receipt=None):
+def settle_approved_wait(run_dir, prior, note, finish, report, readback, operation='approved_wait', wait_receipt=None, cleanup_proof=None):
     """Called under worker.lock; keep byte-exact originals and append a local audit."""
     paths = [run_dir/n for n in ('state.json', 'finish-response.json', 'worker-report.json', 'task-readback.json')]
     backup = run_dir/(operation.replace('_', '-')+'-state-before.json'); audit = run_dir/'dispatch-settlement.json'
@@ -570,6 +603,11 @@ def settle_approved_wait(run_dir, prior, note, finish, report, readback, operati
     originals = {p: p.read_bytes() for p in paths}
     if any(json.loads(originals[p]) != value for p, value in zip(paths, values)):
         raise ValueError('Original approval evidence changed before settlement')
+    if cleanup_proof is not None:
+        path, raw, identity = cleanup_proof
+        if path != run_dir/'stopped-cleanup.json' or read_cleanup_proof(path) != (raw, identity):
+            raise ValueError('Cleanup proof changed or was replaced after validation')
+        originals[path] = raw
     record = {**note, 'operation': operation, 'recorded_at': time.time(), 'prior_state': prior,
               'original_evidence_sha256': {p.name: hashlib.sha256(raw).hexdigest() for p, raw in originals.items()}}
     for path, raw in ((backup, originals[paths[0]]), (audit, json.dumps(record, indent=2).encode())):
@@ -578,6 +616,8 @@ def settle_approved_wait(run_dir, prior, note, finish, report, readback, operati
             stream.write(raw); stream.flush(); os.fsync(stream.fileno())
     if any(p.read_bytes() != raw for p, raw in originals.items()):
         raise ValueError('Original approval evidence changed during settlement; reconcile audit before retry')
+    if cleanup_proof is not None and read_cleanup_proof(cleanup_proof[0]) != cleanup_proof[1:]:
+        raise ValueError('Cleanup proof replaced during settlement; reconcile audit before retry')
     save(paths[0], {**prior, 'prior_status': prior['status'], 'status': 'settled'})
 
 

@@ -134,6 +134,15 @@ original evidence hashes in `dispatch-settlement.json`, and changes only local
 admission to `settled`. Approval and settlement do not establish permission or
 runtime acceptance, consume a nonce, launch a model or resume the old run.
 
+If both original report and service result use the same cleanup description,
+they must both reference the canonical same-run `stopped-cleanup.json`. That
+regular non-symlink proof must identify the exact task/generation/worker and
+positively record stopped/checked execution, reaped commands, clean children and
+no input. Its description must agree with both originals. Settlement binds the
+file's bytes and filesystem identity through validation and audit; a replacement,
+changed proof, unknown operation or conflicting flag refuses settlement. Original
+reports, receipts and proof stay unchanged, and the local audit includes its hash.
+
 An ended run that failed locally before its first claim needs distinct evidence:
 an explicit `unclaimed_stopped` worker report with stopped/checked cleanup, no
 app/simulator/source effects and a failed, unrepeated local claim attempt; a
