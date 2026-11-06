@@ -283,15 +283,23 @@ def main():
                 run_dir = ROOT/prior['run_id']
                 report_path = run_dir/'worker-report.json'
                 unclaimed = finish.get('finish_invoked') is False
-                proof_path = run_dir/('task-readback.json' if unclaimed else 'wait-receipt.json')
+                approved = finish.get('status') == 'pending_external_approval'
+                proof_path = run_dir/('task-readback.json' if unclaimed or approved else 'wait-receipt.json')
                 if (finish_path != run_dir/'finish-response.json'
                         or any(not p.is_file() or p.resolve() != p for p in (finish_path, report_path, proof_path))):
                     raise ValueError('Queued settlement requires this run\'s actual operation evidence and worker report')
                 report = json.loads(report_path.read_text())
                 proof = json.loads(proof_path.read_text())
-                if unclaimed: readback = proof
+                if unclaimed or approved: readback = proof
                 else: wait_receipt = proof
             validate_settlement(prior, task, finish, note, config['worker'], report, wait_receipt, readback)
+            if task.get('status') == 'queued' and finish.get('status') == 'pending_external_approval':
+                if runs[-1]['run_id'] != prior['run_id']:
+                    raise ValueError('A later local run exists; do not settle historical approval work')
+                settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback)
+                print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
+                                  'task_status_unchanged': task['status']}))
+                return
             # Audit local admission only. Never finish/reassign/retry a service task.
             save(ROOT/prior['run_id']/'dispatch-settlement.json', {**note, 'recorded_at': time.time()})
             save(ROOT/prior['run_id']/'state.json', {**prior, 'prior_status': prior['status'], 'status': 'settled'})
@@ -422,6 +430,8 @@ def validate_settlement(run, task, finish, note, worker, report=None, wait_recei
     if task.get('status') == 'queued':
         if finish.get('finish_invoked') is False:
             validate_unclaimed_stop(run, task, finish, report, readback, worker)
+        elif finish.get('status') == 'pending_external_approval':
+            validate_approved_wait(run, task, finish, report, readback, note, worker)
         else:
             validate_queued_wait(run, task, finish, report, wait_receipt, worker)
     elif (task.get('status') not in ('blocked', 'failed', 'pending_external_approval')
@@ -435,6 +445,118 @@ def validate_settlement(run, task, finish, note, worker, report=None, wait_recei
             or note.get('unknown_operations') != []
             or not isinstance(note.get('cleanup_evidence'), str) or not note['cleanup_evidence'].strip()):
         raise ValueError('Positive exact-run cleanup/input/external-state evidence is required')
+
+
+def validate_approved_wait(run, task, finish, report, readback, note, worker):
+    """Accept an authenticated approval transition, never a replacement wait receipt."""
+    def timestamp(value):
+        return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+    if (not isinstance(report, dict) or not isinstance(readback, dict)
+            or not re.fullmatch('[a-f0-9]{32}', run.get('run_id', ''))
+            or run.get('task') != task.get('id') or run.get('worker') != worker
+            or run.get('status') != 'needs_attention' or run.get('completion_verified') is not False
+            or type(run.get('cli_exit_code')) is not int or run['cli_exit_code'] != 0
+            or any(not timestamp(run.get(k)) for k in ('created_at', 'started_at', 'ended_at'))
+            or not run['created_at'] <= run['started_at'] <= run['ended_at']
+            or run.get('task_status') != 'pending_external_approval'
+            or type(run.get('queued_generation')) is not int
+            or type(task.get('generation')) is not int or task['generation'] != run['queued_generation'] + 1
+            or task['generation'] < 1 or type(task.get('step')) is not int or task['step'] < 0
+            or task.get('status') != 'queued' or task.get('owner') is not None
+            or task.get('last_owner') != worker
+            or finish.get('status') != 'pending_external_approval' or finish.get('owner') != worker
+            or any(readback.get(k) != finish.get(k) for k in ('status', 'owner', 'last_owner'))
+            or readback.get('approval') != {'state': 'awaiting_decision'}
+            or report.get('task') != task['id'] or report.get('generation') != task['generation']
+            or report.get('worker') != worker or report.get('outcome') != 'pending_external_approval'
+            or report.get('acceptance_complete') is not False):
+        raise ValueError('Exact ended owning approval wait and original finish/readback required')
+    # Approval only clears ownership/retry state. Pins, constraints, counters and
+    # original receipts must still be those of this run, including earlier history.
+    immutable = ('id', 'generation', 'step', 'result', 'requirements', 'dependencies', 'request_key',
+                 'steps', 'compute', 'fix_attempts_used', 'total_fix_attempts', 'reassignment_count',
+                 'attempts_host', 'attempt_base', 'attempt_exception', 'attempt_allowance')
+    if any(k not in finish or k not in readback or finish[k] != readback[k] or finish[k] != task.get(k)
+           for k in immutable) or readback.get('receipts') != task.get('receipts'):
+        raise ValueError('Original target, constraints, counters and receipt history must remain unchanged')
+    result = task.get('result'); cleanup = report.get('cleanup')
+    if (not isinstance(result, dict) or not isinstance(cleanup, dict)
+            or result.get('acceptance_complete') is not False
+            or report.get('summary') != result.get('summary')
+            or ('cleanup' in result and result['cleanup'] != cleanup)
+            or any(value.get(k) is not True for value in (result, cleanup)
+                   for k in ('execution_stopped', 'external_state_checked'))):
+        raise ValueError('Positive original stopped/checked incomplete acceptance evidence required')
+    for value in (run, report, cleanup, result, note):
+        if (value.get('human_stop') is True or value.get('unknown_operations', []) != []
+                or value.get('unsettled_operations', []) != []
+                or any(k in value and value[k] is not True
+                       for k in ('execution_stopped', 'external_state_checked', 'input_settled'))):
+            raise ValueError('Contradictory holds, cleanup or unknown operations cannot be settled')
+    receipts = [r for r in task.get('receipts', []) if r.get('generation') == task['generation']]
+    if (len(receipts) != 1 or receipts[0].get('task_id') != task['id']
+            or receipts[0].get('step') != task['step']
+            or receipts[0].get('receipt') != {'outcome': 'pending_external_approval', 'receipt': result}
+            or not timestamp(receipts[0].get('at')) or receipts[0]['at'] > run['ended_at']):
+        raise ValueError('One exact original pending-approval receipt required')
+    approval = task.get('approval') or {}; evidence = approval.get('evidence')
+    if (approval.get('state') != 'approved' or not isinstance(evidence, dict)
+            or set(evidence) != {'approval_id', 'generation', 'source', 'response', 'scope', 'scope_evidence'}
+            or type(evidence['generation']) is not int or evidence['generation'] != task['generation']):
+        raise ValueError('Authenticated approval source and exact generation required')
+    source = evidence['source']
+    if (not isinstance(source, dict) or set(source) != {'thread_id', 'question_id', 'message_id'}
+            or any(not isinstance(v, str) or not v.strip() for v in source.values())
+            or any(not isinstance(evidence[k], str) or not evidence[k].strip()
+                   for k in ('response', 'scope', 'scope_evidence'))
+            or evidence['approval_id'] != hashlib.sha256(json.dumps(source, sort_keys=True,
+                                                        separators=(',', ':')).encode()).hexdigest()):
+        raise ValueError('Exact recorded approval identity and scope required')
+    question = result.get('approval_request')
+    if question is not None and (not isinstance(question, dict)
+            or any(question.get(k) != source[k] for k in ('thread_id', 'question_id'))):
+        raise ValueError('Approval must match the original structured question')
+    original_events = readback.get('events'); events = task.get('events')
+    if (not isinstance(original_events, list) or not original_events or not isinstance(events, list)
+            or events[:-1] != original_events or len(events) != len(original_events) + 1):
+        raise ValueError('Only the original history plus one approval transition may settle')
+    pending, applied = original_events[-1], events[-1]
+    try:
+        detail = json.loads(applied.get('detail', ''))
+    except (TypeError, ValueError):
+        raise ValueError('Approval event detail must be recorded JSON') from None
+    if (pending.get('task_id') != task['id'] or pending.get('actor') != worker
+            or pending.get('kind') != 'pending_external_approval' or not timestamp(pending.get('at'))
+            or not receipts[0]['at'] <= pending['at'] <= run['ended_at']
+            or applied.get('task_id') != task['id'] or applied.get('kind') != 'approval-applied'
+            or applied.get('actor') not in ('admin', worker) or detail != evidence
+            or not timestamp(applied.get('at')) or applied['at'] < pending['at']
+            or approval.get('recorded_at') != applied['at']
+            or type(pending.get('id')) is not int or type(applied.get('id')) is not int
+            or applied['id'] <= pending['id']):
+        raise ValueError('Matching approval event without later claims or contradictions required')
+
+
+def settle_approved_wait(run_dir, prior, note, finish, report, readback):
+    """Called under worker.lock; keep byte-exact originals and append a local audit."""
+    paths = [run_dir/n for n in ('state.json', 'finish-response.json', 'worker-report.json', 'task-readback.json')]
+    backup = run_dir/'approved-wait-state-before.json'; audit = run_dir/'dispatch-settlement.json'
+    if (any(not p.is_file() or p.resolve() != p for p in paths)
+            or any(p.exists() or p.is_symlink() for p in (backup, audit, run_dir/'wait-receipt.json'))):
+        raise ValueError('Canonical original approval evidence without existing settlement/wait required')
+    originals = {p: p.read_bytes() for p in paths}
+    if any(json.loads(originals[p]) != value for p, value in zip(paths, (prior, finish, report, readback))):
+        raise ValueError('Original approval evidence changed before settlement')
+    record = {**note, 'operation': 'approved_wait', 'recorded_at': time.time(), 'prior_state': prior,
+              'original_evidence_sha256': {p.name: hashlib.sha256(raw).hexdigest() for p, raw in originals.items()}}
+    for path, raw in ((backup, originals[paths[0]]), (audit, json.dumps(record, indent=2).encode())):
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+    if any(p.read_bytes() != raw for p, raw in originals.items()):
+        raise ValueError('Original approval evidence changed during settlement; reconcile audit before retry')
+    save(paths[0], {**prior, 'prior_status': prior['status'], 'status': 'settled'})
 
 
 def validate_preclaim_readiness_stop(run, task, report, readback, note, worker):

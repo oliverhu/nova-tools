@@ -119,6 +119,21 @@ foreign, stale or contradictory evidence keeps admission held. Settlement never
 completes or retries that task, changes its dependencies/counters/holds, resumes
 its old model session or starts the next task; Dispatcher selects new work.
 
+An owning `pending_external_approval` finish may later be queued by a verified
+human response. The same `settle` command has a separate approval path: retain
+the original `finish-response.json`, `worker-report.json` and pending
+`task-readback.json`; never write a synthetic wait receipt or replace their
+outcomes. Only the latest ended run with the same task/generation/worker may
+settle. Fresh authenticated API history must preserve the original receipts,
+pins, requirements, dependencies and counters, followed by exactly one matching
+`approval-applied` event/source. Later claims, reconciliation, unknown operations,
+human stops or contradictory cleanup fail closed. The exact positive operator
+cleanup/input note is still required under the existing exclusive worker lock.
+The command preserves byte-exact `approved-wait-state-before.json`, records
+original evidence hashes in `dispatch-settlement.json`, and changes only local
+admission to `settled`. Approval and settlement do not establish permission or
+runtime acceptance, consume a nonce, launch a model or resume the old run.
+
 An ended run that failed locally before its first claim needs distinct evidence:
 an explicit `unclaimed_stopped` worker report with stopped/checked cleanup, no
 app/simulator/source effects and a failed, unrepeated local claim attempt; a
