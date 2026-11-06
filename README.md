@@ -404,6 +404,13 @@ For source-only upgrades on the existing cluster, use
 `python3 deploy/deploy.py --apply --code-only`. This preserves live TLS names,
 networking and deployment settings while replacing the immutable source bundle.
 
+When the reviewed service source is a minimal port based on an older live
+revision, add `--skip-client-package` to that code-only command. This preserves
+the existing distributed client bundle. Publish clients separately with
+`scripts/package-client.py` from their verified current source revision; do not
+replace newer CLI adapters, skills or client fixes with an older service tree.
+The default deployment behavior still packages clients from its own checkout.
+
 UI test-tooling failures create a separate, deduplicated repair task. After
 execution settles, the affected feature waits in the queue on that repair,
 retaining other dependencies and all acceptance evidence. Repair completion
