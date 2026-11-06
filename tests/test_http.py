@@ -68,6 +68,12 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(200,code);self.assertEqual(audit,json.loads(raw)['audit_id']);self.assertTrue(json.loads(raw)['replayed'])
         self.assertEqual(400,self.request('/api/releases/policy/apply','admin',{**body,'execution_stopped':False})[0])
 
+    def test_question_link_is_admin_only(self):
+        for actor in (None, "oliver-mini", "oliver-mac"):
+            self.assertEqual(403, self.request("/api/approval-links/apply", actor, {})[0])
+            self.assertEqual(403, self.request("/api/approval-links/"+"a"*64, actor)[0])
+        self.assertEqual(400, self.request("/api/approval-links/apply", "admin", {})[0])
+
     def test_worker_cannot_reconcile(self):
         self.assertEqual(403,self.request("/api/tasks/1234567890abcdef/reconcile","oliver-mini",{})[0])
 

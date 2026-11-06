@@ -362,3 +362,22 @@ skill/client-bundle revision, synchronization and per-actor readbacks separately
 from the minimal live service pin. Existing observer support must provide actual
 Git ancestry; old reporters cannot qualify it. Do not add another timer, broad
 cancellation, manual publication or approval bypass.
+
+## Audited cross-chat question linkage
+
+Ordinary approval source/scope stays immutable. An administrator who has actually
+reviewed the original question, later Coordinator question and direct human
+response may use `POST /api/approval-links/apply` for one exact pending task and
+generation. The separate ledger retains the original durable question binding,
+visible question item/text, actual response source/text, reviewed scope and the
+current result SHA-256. Positive decision/link/stop/external-state attestations
+are mandatory. Changed claims, original questions/results, holds, ambiguous scope
+or unknown outcomes refuse the operation. The service cannot verify chat meaning:
+operators must review primary messages and never infer consent from settings.
+
+Read `GET /api/approval-links/LINK_ID` as administrator for immutable before/after
+and request evidence. This ledger does not append tasks to or rewrite an existing
+ordinary approval. A matching replay returns the original link and current task
+without requeuing a later claim. The task's result, receipts, dependencies and
+counters stay intact; an `approval-applied` event includes `question_link` evidence.
+The link records reported approval, not OS predicate or runtime qualification.

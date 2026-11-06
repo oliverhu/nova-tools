@@ -550,7 +550,8 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
         raise ValueError('One exact original pending-approval receipt required')
     approval = task.get('approval') or {}; evidence = approval.get('evidence')
     if (approval.get('state') != 'approved' or not isinstance(evidence, dict)
-            or set(evidence) != {'approval_id', 'generation', 'source', 'response', 'scope', 'scope_evidence'}
+            or set(evidence) not in ({'approval_id', 'generation', 'source', 'response', 'scope', 'scope_evidence'},
+                                     {'approval_id', 'generation', 'source', 'response', 'scope', 'scope_evidence', 'question_link'})
             or type(evidence['generation']) is not int or evidence['generation'] != task['generation']):
         raise ValueError('Authenticated approval source and exact generation required')
     source = evidence['source']
@@ -562,7 +563,16 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
                                                         separators=(',', ':')).encode()).hexdigest()):
         raise ValueError('Exact recorded approval identity and scope required')
     question = result.get('approval_request')
-    if question is not None and (not isinstance(question, dict)
+    link = evidence.get('question_link')
+    if link is not None:
+        identity = {'task': task['id'], 'generation': task['generation'], 'original_question': question, 'source': source}
+        if (not isinstance(link, dict) or set(link) != {'link_id', 'original_question', 'task', 'generation', 'result_sha256'}
+                or link['original_question'] != question or link['task'] != task['id'] or link['generation'] != task['generation']
+                or link['result_sha256'] != hashlib.sha256(json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                or link['link_id'] != hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                or not isinstance(question, dict) or question.get('thread_id') == source['thread_id']):
+            raise ValueError('Exact authenticated cross-chat question link required')
+    elif question is not None and (not isinstance(question, dict)
             or any(question.get(k) != source[k] for k in ('thread_id', 'question_id'))):
         raise ValueError('Approval must match the original structured question')
     original_events = readback.get('events'); events = task.get('events')

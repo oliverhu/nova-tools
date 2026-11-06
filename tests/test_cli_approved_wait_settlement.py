@@ -62,6 +62,23 @@ class ApprovedWaitSettlementTests(unittest.TestCase):
         self.assertEqual(args[4], args[2]['last_owner'])
         self.assertEqual(args[4], args[1]['last_owner'])
 
+    def test_authenticated_question_link_matches_original_without_rebinding_it(self):
+        import hashlib
+        args = fixture()
+        task = args[1]; evidence = task['approval']['evidence']
+        source = evidence['source']; source['thread_id'] = 'later-coordinator'
+        evidence['approval_id'] = hashlib.sha256(json.dumps(source, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        original = task['result']['approval_request']
+        identity = {'task': task['id'], 'generation': 1, 'original_question': original, 'source': source}
+        evidence['question_link'] = {'link_id': hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+            'task': task['id'], 'generation': 1, 'original_question': original,
+            'result_sha256': hashlib.sha256(json.dumps(task['result'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
+        task['events'][-1]['detail'] = json.dumps(evidence)
+        adapter.validate_settlement(*args)
+        evidence['question_link']['result_sha256'] = '0'*64
+        task['events'][-1]['detail'] = json.dumps(evidence)
+        with self.assertRaises(ValueError): adapter.validate_settlement(*args)
+
     def test_real_service_later_claim_cannot_settle_the_original_wait(self):
         with self.assertRaises(ValueError): adapter.validate_settlement(*fixture(later_claim=True))
 

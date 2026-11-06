@@ -15,7 +15,7 @@ from pathlib import Path
 from .approvals import approval_payload, approval_id
 from .workers import WORKERS, INITIALLY_PAUSED_WORKERS
 from .outcomes import finish_outcome
-from . import publication_policy
+from . import publication_policy, approval_links
 from .attempt_accounting import BINDING, correction_payload
 from .attempt_allowances import allowance_payload
 
@@ -131,6 +131,7 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
             db.executescript(publication_policy.SCHEMA)
+            db.executescript(approval_links.SCHEMA)
             columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
             if "last_owner" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN last_owner TEXT")
@@ -1401,7 +1402,7 @@ class Store:
                 if t["status"]=="queued":
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
-                "capabilities":{"approval_receipts":1,"approval_recovery":"verified_decisions_only",
+                "capabilities":{"approval_receipts":1,"approval_question_links":1,"approval_recovery":"verified_decisions_only",
                                 "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1,
                                 "attempt_allowance_amendments":1,"completed_attempt_correction":1,
                                 "ios_upload_only_releases":1,"publication_policy":1},
