@@ -99,6 +99,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(403,{"error":"Cross-origin requests are not allowed"})
         store=self.server.store
         if self.command=="GET":
+            link = re.fullmatch(r"/api/approval-links/([0-9a-f]{64})", path)
+            if link:
+                if actor != "admin":
+                    return self.respond(403, {"error": "Question linkage requires administrator identity"})
+                from . import approval_links
+                return self.respond(200, approval_links.detail(store, actor, link[1]))
+
             approval=re.fullmatch(r'/api/approvals/([0-9a-f]{64})',path)
             if approval:
                 if actor not in ('admin', *WORKERS):
@@ -111,6 +118,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            if path == "/api/approval-links/apply":
+                if actor != "admin":
+                    return self.respond(403, {"error": "Question linkage requires administrator identity"})
+                from . import approval_links
+                return self.respond(200, approval_links.apply(store, actor, body))
             if path in ('/api/attempt-allowances/apply', '/api/attempt-allowances/amend'):
                 if actor != 'admin':
                     return self.respond(403,{'error':'Attempt allowances require administrator identity'})
