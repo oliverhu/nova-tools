@@ -271,18 +271,21 @@ def main():
             task = Client().request('/api/tasks/'+prior['task'])
             finish_path = prior_finish(ROOT, prior)
             note = json.loads(args.note_file.read_text())
-            report = wait_receipt = None
+            report = wait_receipt = readback = None
+            finish = json.loads(finish_path.read_text()) if finish_path else {}
             if task.get('status') == 'queued':
                 run_dir = ROOT/prior['run_id']
                 report_path = run_dir/'worker-report.json'
-                wait_path = run_dir/'wait-receipt.json'
+                unclaimed = finish.get('finish_invoked') is False
+                proof_path = run_dir/('task-readback.json' if unclaimed else 'wait-receipt.json')
                 if (finish_path != run_dir/'finish-response.json'
-                        or any(not p.is_file() or p.resolve() != p for p in (finish_path, report_path, wait_path))):
-                    raise ValueError('Queued settlement requires this run\'s actual wait input, response and worker report')
+                        or any(not p.is_file() or p.resolve() != p for p in (finish_path, report_path, proof_path))):
+                    raise ValueError('Queued settlement requires this run\'s actual operation evidence and worker report')
                 report = json.loads(report_path.read_text())
-                wait_receipt = json.loads(wait_path.read_text())
-            finish = json.loads(finish_path.read_text()) if finish_path else {}
-            validate_settlement(prior, task, finish, note, config['worker'], report, wait_receipt)
+                proof = json.loads(proof_path.read_text())
+                if unclaimed: readback = proof
+                else: wait_receipt = proof
+            validate_settlement(prior, task, finish, note, config['worker'], report, wait_receipt, readback)
             # Audit local admission only. Never finish/reassign/retry a service task.
             save(ROOT/prior['run_id']/'dispatch-settlement.json', {**note, 'recorded_at': time.time()})
             save(ROOT/prior['run_id']/'state.json', {**prior, 'prior_status': prior['status'], 'status': 'settled'})
@@ -409,9 +412,12 @@ def prior_finish(root, record):
     return None
 
 
-def validate_settlement(run, task, finish, note, worker, report=None, wait_receipt=None):
+def validate_settlement(run, task, finish, note, worker, report=None, wait_receipt=None, readback=None):
     if task.get('status') == 'queued':
-        validate_queued_wait(run, task, finish, report, wait_receipt, worker)
+        if finish.get('finish_invoked') is False:
+            validate_unclaimed_stop(run, task, finish, report, readback, worker)
+        else:
+            validate_queued_wait(run, task, finish, report, wait_receipt, worker)
     elif (task.get('status') not in ('blocked', 'failed', 'pending_external_approval')
             or task.get('owner') != worker or finish.get('id') != task.get('id')
             or finish.get('generation') != task.get('generation') or finish.get('status') != task.get('status')
@@ -423,6 +429,44 @@ def validate_settlement(run, task, finish, note, worker, report=None, wait_recei
             or note.get('unknown_operations') != []
             or not isinstance(note.get('cleanup_evidence'), str) or not note['cleanup_evidence'].strip()):
         raise ValueError('Positive exact-run cleanup/input/external-state evidence is required')
+
+
+def validate_unclaimed_stop(run, task, marker, report, readback, worker):
+    """A truthful no-finish marker is not an owning defer or a completion."""
+    if (run.get('task') != task.get('id') or run.get('worker') != worker
+            or run.get('status') != 'needs_attention' or type(run.get('cli_exit_code')) is not int
+            or type(run.get('ended_at')) not in (int, float) or not math.isfinite(run['ended_at']) or run['ended_at'] <= 0
+            or run.get('completion_verified') is not False or run.get('queued_generation') != 0
+            or task.get('generation') != 0 or task.get('step') != 0 or task.get('owner') is not None
+            or task.get('last_owner') is not None or task.get('status') != 'queued'
+            or task.get('result') != {} or task.get('receipts') != [] or task.get('approval') is not None
+            or not task.get('events') or any(e.get('kind') != 'submitted' for e in task['events'])
+            or task.get('requirements', {}).get('worker') != worker
+            or any(task.get(k) != 0 for k in ('fix_attempts_used', 'total_fix_attempts', 'attempt_base', 'reassignment_count'))):
+        raise ValueError('Unclaimed settlement requires an ended run and fresh never-owned task history')
+    if not isinstance(report, dict) or not isinstance(readback, dict):
+        raise ValueError('Actual unclaimed worker report and API readback are required')
+    for value in (marker, report):
+        if (value.get('task_id') != task['id'] or value.get('generation') != 0 or value.get('worker') != worker
+                or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []):
+            raise ValueError('Unclaimed evidence must match the exact task/generation/worker')
+    cleanup = report.get('cleanup', {}); attempt = report.get('claim_attempt', {})
+    if (marker.get('finish_invoked') is not False or marker.get('finish_response', 'missing') is not None
+            or not isinstance(marker.get('reason'), str) or not marker['reason'].strip()
+            or report.get('outcome') != 'unclaimed_stopped' or report.get('api_status') != 'queued'
+            or report.get('acceptance_complete') is not False
+            or cleanup.get('execution_stopped') is not True or cleanup.get('external_state_checked') is not True
+            or cleanup.get('owned_app_or_simulator_operations_started') is not False
+            or cleanup.get('source_changes') is not False
+            or not isinstance(cleanup.get('owned_processes'), str) or not cleanup['owned_processes'].strip()
+            or cleanup.get('unknown_operations', []) != [] or cleanup.get('unsettled_operations', []) != []
+            or type(attempt.get('exit_code')) is not int or attempt['exit_code'] == 0
+            or attempt.get('service_refusal') is not False or attempt.get('rerun') is not False):
+        raise ValueError('Positive stopped/checked no-runtime evidence and actual no-finish marker are required')
+    keys = ('id', 'generation', 'step', 'status', 'owner', 'last_owner', 'requirements', 'dependencies',
+            'result', 'receipts', 'events', 'approval', 'fix_attempts_used', 'total_fix_attempts', 'attempt_base', 'reassignment_count')
+    if any(key not in readback or readback[key] != task.get(key) for key in keys):
+        raise ValueError('Fresh API must match this run\'s retained unclaimed readback')
 
 
 def validate_queued_wait(run, task, response, report, wait_receipt, worker):

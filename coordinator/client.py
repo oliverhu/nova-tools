@@ -1,6 +1,7 @@
 """Local client. Both Macs use the same protocol and have equal permissions."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +28,10 @@ class ServiceRejected(RuntimeError):
         super().__init__(message)
 
 
+class LocalResourceDenied(RuntimeError):
+    """The sandbox denied a local memory query; no capacity was reported."""
+
+
 class Client:
     def __init__(self, path=CONFIG):
         self.path=Path(path)
@@ -50,7 +55,12 @@ class Client:
             raise ServiceRejected(e.code,f"Service rejected request ({e.code}): {e.read().decode()}") from None
 
     def pulse(self):
-        memory=int(subprocess.check_output(["/usr/sbin/sysctl","-n","hw.memsize"]))/(1024**3) if sys.platform=="darwin" else 0
+        try:
+            memory=int(subprocess.check_output(["/usr/sbin/sysctl","-n","hw.memsize"], stderr=subprocess.PIPE))/(1024**3) if sys.platform=="darwin" else 0
+        except subprocess.CalledProcessError as error:
+            if error.stderr and any(reason in error.stderr for reason in (b'Operation not permitted', b'Permission denied')):
+                raise LocalResourceDenied('Local memory query denied; require fresh existing reporter evidence') from None
+            raise
         cpus = os.cpu_count() or 1
         limits = self.config.get("capacity_limits", {})
         for key, value in limits.items():
@@ -65,11 +75,45 @@ class Client:
         return self.request("/api/worker/pulse",{"capacity":{"memory_gb":round(memory,1),"cpus":cpus,
             "disk_gb":round(max(0,disk-reserve),1),"capabilities":self.config.get("capabilities",["macos","development"])}})
 
+    def require_fresh_reporter(self):
+        """Read existing own reporter evidence without writing substitute capacity."""
+        workers = [w for w in self.request('/api/state')['workers'] if w.get('id') == self.config['worker']]
+        if len(workers) != 1:
+            raise RuntimeError('Missing unique own resource reporter')
+        worker = workers[0]; seen = worker.get('seen'); now = time.time()
+        if (worker.get('online') is not True or worker.get('paused')
+                or type(seen) not in (int, float) or not math.isfinite(seen) or not -5 <= now-seen < 90):
+            raise RuntimeError('Own resource reporter is unavailable or stale')
+        capacity = worker.get('capacity', {}); limits = self.config.get('capacity_limits', {})
+        if not isinstance(capacity, dict) or not isinstance(limits, dict):
+            raise ValueError('Invalid reported capacity or configured limits')
+        for key, value in limits.items():
+            if (key not in ('cpus', 'memory_gb') or type(value) not in (int, float)
+                    or not math.isfinite(value) or value <= 0):
+                raise ValueError('Invalid worker capacity limit')
+        for key in ('memory_gb', 'cpus', 'disk_gb'):
+            value = capacity.get(key)
+            if (type(value) not in (int, float) or not math.isfinite(value)
+                    or value < (0 if key == 'disk_gb' else 1)
+                    or value > limits.get(key, 100000)):
+                raise RuntimeError('Own reported resources are unknown or exceed configured limits')
+        caps = capacity.get('capabilities')
+        if (not isinstance(caps, list) or not all(isinstance(x, str) for x in caps)
+                or not set(caps).issubset(self.config.get('capabilities', ['macos', 'development']))):
+            raise RuntimeError('Reported capabilities differ from current worker configuration')
+        return {'source': 'fresh_existing_reporter', 'worker': self.config['worker'],
+                'seen': seen, 'local_memory_query_denied': True}
+
     def claim(self,ident=None):
         # Recover only decisions already explicitly verified and journaled locally.
         recovered=self.recover_approvals()
-        self.pulse()
+        resource_readiness = None
+        try:
+            self.pulse()
+        except LocalResourceDenied:
+            resource_readiness = self.require_fresh_reporter()
         result=self.request("/api/worker/claim",{"task_id":ident})
+        if resource_readiness:result['resource_readiness']=resource_readiness
         if recovered:result['approval_recovery']=recovered
         if result.get("task"):
             path=self.state/(result["task"]["id"]+".json")

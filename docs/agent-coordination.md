@@ -107,6 +107,25 @@ foreign, stale or contradictory evidence keeps admission held. Settlement never
 completes or retries that task, changes its dependencies/counters/holds, resumes
 its old model session or starts the next task; Dispatcher selects new work.
 
+An ended run that failed locally before its first claim needs distinct evidence:
+an explicit `unclaimed_stopped` worker report with stopped/checked cleanup, no
+app/simulator/source effects and a failed, unrepeated local claim attempt; a
+truthful `finish_invoked: false` marker; and the retained task readback. The fresh
+API must still match a never-owned generation-zero task, original submission
+history, empty result/receipts and zero attempts. The exact positive operator
+settlement note remains mandatory. This releases only local admission; the
+marker is never treated as a service finish or owning defer.
+
+When a sandbox explicitly denies the client's local memory query, `next` may
+use its existing own resource reporter from the authoritative service. It must
+be online, unpaused and less than 90 seconds old, with finite positive CPU/memory,
+known disk capacity, configured guest limits and capabilities respected. The
+client records this resource evidence and uses the normal atomic service claim;
+it does not write substitute capacity. Unknown/stale resources and other query,
+configuration or service failures still stop claiming. The separate reporter
+continues normally. This changes no sandbox/OS permissions or task-specific
+UI, signing or simulator readiness, and never authorizes an automatic retry.
+
 1. Coordinator submits once with a stable `request_key`, concrete acceptance and
    real dependency IDs. Report the **service-returned task ID** to the user.
 2. Coordinator may assign directly; Dispatcher handles eligible idle wake-ups
