@@ -5,12 +5,12 @@ from pathlib import Path
 import mimetypes
 
 
-def serve(client,port=18766):
+def create_server(client,port=18766):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def handle_request(self):
             host=self.headers.get("Host","")
-            if host not in (f"127.0.0.1:{port}",f"localhost:{port}"):
+            if host not in (f"127.0.0.1:{self.server.server_port}",f"localhost:{self.server.server_port}"):
                 self.send_error(403);return
             if self.headers.get("Origin") not in (None,"http://"+host):
                 self.send_error(403);return
@@ -18,7 +18,7 @@ def serve(client,port=18766):
                 self.send_error(403);return
             code=200
             try:
-                if self.path in ("/","/app.js","/style.css") and self.command=="GET":
+                if self.path in ("/","/app.js","/worker-status.js","/style.css") and self.command=="GET":
                     file=Path(__file__).resolve().parents[1]/"web"/("index.html" if self.path=="/" else self.path[1:])
                     data=file.read_bytes();ctype=mimetypes.guess_type(str(file))[0]
                 elif self.path.startswith("/api/"):
@@ -45,4 +45,8 @@ def serve(client,port=18766):
             self.end_headers();self.wfile.write(data)
         do_GET=handle_request
         do_POST=handle_request
-    ThreadingHTTPServer(("127.0.0.1",port),Handler).serve_forever()
+    return ThreadingHTTPServer(("127.0.0.1",port),Handler)
+
+
+def serve(client,port=18766):
+    create_server(client,port).serve_forever()

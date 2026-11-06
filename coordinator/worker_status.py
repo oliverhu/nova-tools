@@ -93,7 +93,7 @@ def collect_cli_status(worker, root=None):
                 return _unavailable()
             state = directory/'state.json'
             if not state.exists():
-                continue
+                return _unavailable()
             record, modified = _private_json(state)
             if record.get('worker') != worker:
                 return _unavailable()
