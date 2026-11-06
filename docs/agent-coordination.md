@@ -116,6 +116,28 @@ history, empty result/receipts and zero attempts. The exact positive operator
 settlement note remains mandatory. This releases only local admission; the
 marker is never treated as a service finish or owning defer.
 
+For a truthful readiness stop **before any claim attempt**, use the separate
+`nova-cli-worker reconcile-preclaim --run-id ID --note-file /absolute/note.json`
+operation. Do not invent a failed claim or finish marker to satisfy `settle`.
+The existing exclusive worker lock must be free. Only the latest ended
+`needs_attention` run with CLI exit zero is admitted, with its canonical original
+report and task readback, no claim/finish/wait artifacts, and the explicit
+`queued_prerequisite_not_claimed` outcome. The owner must report no claim or
+finish attempt, stopped execution, empty runtime/input operations, no app/server,
+consent or source changes, and preserved unrelated work. The fresh API must
+match a never-owned queued generation-zero task, expected worker, unchanged
+dependencies/submission history, empty result/receipts and zero counters.
+
+The operator note binds `run_id`, `task`, `generation` and `worker`, with
+`execution_stopped`, `external_state_checked` and `input_settled` all true,
+`unknown_operations: []` and descriptive `cleanup_evidence`. Real approval holds,
+unknown effects, contradictory reports, changed claims or evidence keep admission
+held. Reconciliation retains a byte-exact `preclaim-state-before.json` and private
+`preclaim-reconciliation.json` audit, then changes only local admission to
+`settled` while preserving `prior_status: needs_attention`. It performs no service
+mutation, model launch, claim, retry or finish. The missing readiness plan or OS
+consent still needs its own actual qualification before another exact-task wake.
+
 When a sandbox explicitly denies the client's local memory query, `next` may
 use its existing own resource reporter from the authoritative service. It must
 be online, unpaused and less than 90 seconds old, with finite positive CPU/memory,

@@ -212,7 +212,7 @@ def verify_completion(task, run_dir):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', '_run'])
+    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-preclaim', '_run'])
     parser.add_argument('--task')
     parser.add_argument('--run-id')
     parser.add_argument('--lock-fd', type=int)
@@ -264,6 +264,12 @@ def main():
             return
         if busy:
             raise ValueError('CLI worker is busy; no duplicate wake')
+        if args.operation == 'reconcile-preclaim':
+            prior = next((r for r in runs if r['run_id'] == args.run_id), None)
+            if not prior or runs[-1]['run_id'] != args.run_id or not args.note_file:
+                raise ValueError('Preclaim reconciliation requires the latest run and an explicit cleanup note')
+            reconcile_preclaim(ROOT, prior, args.note_file, config['worker'])
+            return
         if args.operation == 'settle':
             prior = next((r for r in runs if r['run_id'] == args.run_id), None)
             if not prior or prior['status'] != 'needs_attention' or prior.get('cli_exit_code') is None or not args.note_file:
@@ -429,6 +435,97 @@ def validate_settlement(run, task, finish, note, worker, report=None, wait_recei
             or note.get('unknown_operations') != []
             or not isinstance(note.get('cleanup_evidence'), str) or not note['cleanup_evidence'].strip()):
         raise ValueError('Positive exact-run cleanup/input/external-state evidence is required')
+
+
+def validate_preclaim_readiness_stop(run, task, report, readback, note, worker):
+    """An explicit readiness stop before any claim is not a failed claim/finish."""
+    if (not re.fullmatch('[a-f0-9]{32}', run.get('run_id', ''))
+            or run.get('task') != task.get('id') or run.get('worker') != worker
+            or run.get('status') != 'needs_attention' or run.get('completion_verified') is not False
+            or type(run.get('cli_exit_code')) is not int or run['cli_exit_code'] != 0
+            or type(run.get('ended_at')) not in (int, float) or not math.isfinite(run['ended_at']) or run['ended_at'] <= 0
+            or any(type(run.get(k)) is not int or run[k] <= 0 for k in ('supervisor_pid', 'cli_pid'))
+            or any(type(run.get(k)) not in (int, float) or not math.isfinite(run[k]) or run[k] <= 0
+                   for k in ('created_at', 'started_at'))
+            or not run['created_at'] <= run['started_at'] <= run['ended_at']
+            or type(run.get('queued_generation')) is not int or run['queued_generation'] != 0
+            or task.get('status') != 'queued' or type(task.get('generation')) is not int or task['generation'] != 0
+            or type(task.get('step')) is not int or task['step'] != 0
+            or task.get('owner') is not None or task.get('last_owner') is not None
+            or task.get('requirements', {}).get('worker') != worker
+            or task.get('result') != {} or task.get('receipts') != [] or task.get('approval') is not None
+            or any(type(task.get(k)) is not int or task[k] != 0
+                   for k in ('fix_attempts_used', 'total_fix_attempts', 'attempt_base', 'reassignment_count'))
+            or not task.get('events') or any(e.get('kind') != 'submitted' for e in task['events'])):
+        raise ValueError('Preclaim readiness reconciliation requires an ended run and unchanged never-owned task')
+    if not isinstance(report, dict) or not isinstance(readback, dict):
+        raise ValueError('Actual preclaim report and retained API readback are required')
+    cleanup = report.get('cleanup', {})
+    if (report.get('task') != task['id'] or report.get('worker') != worker
+            or type(report.get('generation')) is not int or report['generation'] != 0
+            or type(report.get('queued_generation')) is not int or report['queued_generation'] != 0
+            or report.get('outcome') != 'queued_prerequisite_not_claimed' or report.get('api_status') != 'queued'
+            or report.get('acceptance_complete') is not False or report.get('claim_attempted') is not False
+            or report.get('finish_attempted') is not False or report.get('finish_response_path', 'missing') is not None
+            or 'claim_attempt' in report or not isinstance(report.get('summary'), str) or not report['summary'].strip()
+            or not isinstance(cleanup, dict) or cleanup.get('execution_stopped') is not True
+            or cleanup.get('owned_runtime_operations') != [] or cleanup.get('input_operations') != []
+            or cleanup.get('owned_app_or_server_started') is not False or cleanup.get('consent_requested') is not False
+            or cleanup.get('source_modified') is not False
+            or cleanup.get('inherited_files_staged_work_prior_receipts_preserved') is not True
+            or cleanup.get('unrelated_tasks_unchanged') is not True):
+        raise ValueError('Positive exact-worker readiness stop with no claim, runtime, input or consent is required')
+    for value in (run, report, cleanup, note):
+        if (value.get('human_stop') is True or value.get('approval_request')
+                or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []
+                or any(value.get(k) is False for k in ('execution_stopped', 'external_state_checked', 'input_settled'))):
+            raise ValueError('Real approval holds and unknown operations cannot be reconciled as a readiness stop')
+    keys = ('id', 'generation', 'step', 'status', 'owner', 'last_owner', 'requirements', 'dependencies',
+            'result', 'receipts', 'events', 'approval', 'fix_attempts_used', 'total_fix_attempts', 'attempt_base', 'reassignment_count')
+    if any(key not in readback or readback[key] != task.get(key) for key in keys):
+        raise ValueError('Fresh API must match this run\'s retained preclaim readback')
+    if (note.get('run_id') != run['run_id'] or note.get('task') != task['id']
+            or note.get('generation') != task['generation'] or note.get('worker') != worker
+            or any(note.get(k) is not True for k in ('execution_stopped', 'external_state_checked', 'input_settled'))
+            or note.get('unknown_operations') != []
+            or not isinstance(note.get('cleanup_evidence'), str) or not note['cleanup_evidence'].strip()):
+        raise ValueError('Positive exact-run cleanup/input/external-state note is required')
+
+
+def reconcile_preclaim(root, prior, note_file, worker):
+    # Called only while main holds the existing exclusive worker lock.
+    if not re.fullmatch('[a-f0-9]{32}', prior.get('run_id', '')):
+        raise ValueError('Invalid preclaim run ID')
+    run_dir = root/prior['run_id']
+    paths = [run_dir/n for n in ('state.json', 'worker-report.json', 'task-readback.json')]
+    backup = run_dir/'preclaim-state-before.json'; audit = run_dir/'preclaim-reconciliation.json'
+    forbidden = [run_dir/n for n in ('finish-response.json', 'wait-receipt.json', 'dispatch-settlement.json', 'claim-response.json')]
+    if (any(not p.is_file() or p.resolve() != p for p in paths)
+            or any(p.exists() or p.is_symlink() for p in [backup, audit, *forbidden])):
+        raise ValueError('Canonical original preclaim evidence without finish/wait/settlement artifacts is required')
+    originals = {p: p.read_bytes() for p in paths}
+    if json.loads(originals[paths[0]]) != prior:
+        raise ValueError('Run state changed before preclaim reconciliation')
+    task = Client().request('/api/tasks/'+prior['task'])
+    note = json.loads(note_file.read_text())
+    validate_preclaim_readiness_stop(prior, task, json.loads(originals[paths[1]]),
+                                    json.loads(originals[paths[2]]), note, worker)
+    if any(p.read_bytes() != data for p, data in originals.items()):
+        raise ValueError('Original preclaim evidence changed during reconciliation')
+    # Keep byte-exact needs_attention history; never write a fake finish/claim.
+    fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(originals[paths[0]]); stream.flush(); os.fsync(stream.fileno())
+    audit_record = {**note, 'operation': 'preclaim_readiness_stop', 'recorded_at': time.time(),
+                    'prior_state': prior, 'original_state_sha256': hashlib.sha256(originals[paths[0]]).hexdigest(),
+                    'original_evidence_sha256': {p.name: hashlib.sha256(data).hexdigest() for p, data in originals.items()},
+                    'task_status_unchanged': task['status']}
+    fd = os.open(audit, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(audit_record, stream, indent=2); stream.flush(); os.fsync(stream.fileno())
+    save(paths[0], {**prior, 'prior_status': prior['status'], 'status': 'settled'})
+    print(json.dumps({'run_id': prior['run_id'], 'reconciled_preclaim': True,
+                      'settled_for_other_work': True, 'task_status_unchanged': task['status']}))
 
 
 def validate_unclaimed_stop(run, task, marker, report, readback, worker):
