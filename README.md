@@ -631,3 +631,68 @@ never fall back to guests. Existing claims and approval records remain intact.
 The host client reports `capacity_limits: {"cpus": 14, "memory_gb": 48}` while
 two 8-vCPU, 24-GiB guests run. These limits may only reduce measured capacity.
 Pause settled guest work before allocating more memory/CPU to a large host build.
+
+## Audited publication coalescing
+
+Publication policy is **off for an existing repository until explicitly activated**.
+Deploying the module alone does not cancel tasks or change claims. An administrator
+reads `POST /api/releases/policy/plan` with `{"repository":"owner/repo"}` and
+reviews its exact state fingerprint, proposed supersessions, inherited constraints
+and barriers. `POST /api/releases/policy/apply` takes that repository/fingerprint,
+`execution_stopped: true`, `external_state_checked: true` and descriptive `evidence`.
+It activates the policy and appends a before/after audit. Exact request replay
+returns the original audit; stale task, repository or history state rejects.
+This is queue maintenance, never publication authorization or a replacement for
+an actual rollout quiet boundary.
+
+The existing observer can attach `publication_ancestry` to its normal branch
+observation. It reports the exact remote head, current published baseline and
+only ancestors positively checked with local `git merge-base --is-ancestor`.
+There is no fetch, checkout, index write, new timer or new credential. The service
+trusts the authenticated enrolled observer's source attestation, not commit
+age or a bare `ls-remote` SHA. Missing local objects, stale proofs, divergent
+history and changed baselines fail closed. Old reporter versions remain compatible
+but cannot provide this proof. The additive `publication_candidates` state field
+contains all open target pins, independently of the dashboard's recent-task limit.
+
+Once activated, the same existing hourly transaction coalesces only never-claimed,
+receipt-free, effect-free obsolete targets with proven ancestry. It retains each
+immutable target/result, receipts, counters and original constraints, changes
+status to cancelled and appends supersession audits. Original dependency and
+restrictive worker/resource requirements carry forward before a latest target
+can be claimed. Conflicts or an original dependent requiring the exact old
+publication stop supersession. Combined Nova publication remains restricted to
+the qualified Studio publisher when this policy is enabled.
+
+A running, partial, unknown, approval-held or previously claimed publication is
+a barrier to new automatic publications. Later commits stay in the repository's
+desired-head observation until the barrier settles; an active claim is never
+retargeted or interrupted. Exact no-change against the verified published baseline
+creates no new task and can retire only positively proven unstarted ancestors.
+Finishing a real publication still exclusively controls the published baseline.
+An explicit upload-only authorization keeps its original scope and prerequisites,
+is never coalesced into a combined Mac release, and admits only the earliest safe
+explicit upload while other active or unresolved delivery remains a barrier.
+
+Previously claimed queued handoffs require a separate administrator review through
+`POST /api/releases/policy/review-unstarted`. The exact fields are `repository`,
+`task`, current plan `fingerprint`, every original `owner_receipt_hashes` in order,
+`release_actions_unstarted: true`, `execution_stopped: true`,
+`external_state_checked: true` and descriptive `evidence`. The administrator must
+actually review each owner's no-release-action statement and external state;
+the service does not infer no effects from prose. Only zero-attempt, unowned,
+queued handoffs with every generation's original stopped/checked `waiting`
+receipt, summary-only receipt fields and the allowed claim/wait history qualify.
+Partial uploads, unknown fields, actual approvals, changed claims, incomplete
+history and exact-target dependents refuse this path. Fresh ancestry and all
+original constraints are required; results, receipts, attempts and generations
+remain intact. The operation is audited and idempotent. A broad legacy `reconcile
+cancel` is not a substitute. Remaining exceptions must be reported explicitly.
+
+Service and client rollout are separate. Preserve the actual live source baseline
+and qualified dashboard changes; apply only the reviewed service delta using the
+code-only helper with `--skip-client-package`. Package the qualified current client
+separately and update existing observers through their established owner route.
+Never package an older minimal service checkout over the current client bundle.
+No app publication, TestFlight operation, new schedule or direct database edit is
+part of this maintenance flow.
