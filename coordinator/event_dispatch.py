@@ -108,6 +108,8 @@ def configure(store, actor, worker, body):
             and all(hexid(t, 16) for t in task_ids) and len(set(task_ids)) == len(task_ids)),
             'Pilot task filter must contain unique exact task IDs')
     with store.transaction() as db:
+        from .resource_scope import active as scoped_active
+        require(not scoped_active(db,worker), 'Preserve active resource-scoped ownership', True)
         require(not active(db, worker), 'Settle the active wake before changing dispatch configuration', True)
         require(not db.execute("SELECT id FROM tasks WHERE owner=? AND status IN ('running','held')", (worker,)).fetchone(),
                 'Preserve active ownership during enrollment', True)
@@ -139,6 +141,8 @@ def report(store, worker, body):
             require(config['report'] == encoded(body), 'Conflicting duplicate local report', True)
             return {'accepted': True, 'duplicate': True}
         wake = active(db, worker)
+        from .resource_scope import active as scoped_active
+        require(not scoped_active(db,worker) or body['availability']!='available','Resource-scoped ownership cannot become generic available',True)
         require(not wake or body['availability'] != 'available', 'Only exact supervisor settlement can release an active wake', True)
         db.execute('UPDATE dispatch_workers SET availability=?,observed_at=?,sequence=?,report=? WHERE worker=?',
                    (body['availability'], store.clock(), body['sequence'], encoded(body), worker))
@@ -146,6 +150,8 @@ def report(store, worker, body):
 
 
 def candidate(store, db, worker, task_id=None):
+    from .resource_scope import active as scoped_active
+    if scoped_active(db,worker):return None
     config = db.execute('SELECT * FROM dispatch_workers WHERE worker=?', (worker,)).fetchone()
     if (not config or not config['enabled'] or config['availability'] != 'available'
             or config['observed_at'] <= store.clock() - 90 or active(db, worker)):
@@ -164,6 +170,8 @@ def candidate(store, db, worker, task_id=None):
         if row['task_type'] == 'publish' or row['compute'] == 'heavy':
             continue
         if db.execute("SELECT id FROM dispatch_wakes WHERE task_id=? AND status!='settled'", (row['id'],)).fetchone():
+            continue
+        if db.execute("SELECT id FROM resource_scope_runs WHERE task_id=? AND status IN ('reserved','claimed')",(row['id'],)).fetchone():
             continue
         scheduling = store.scheduling(db, row)
         if (store.fits(row, own) and store.assignment_allowed(row, worker)
@@ -214,7 +222,12 @@ def reserve(store, worker, body):
         return {'wake_id': body['wake_id'], 'status': 'reserved', 'duplicate': False}
 
 
-def claim_allowed(db, row, worker, binding):
+def claim_allowed(db, row, worker, binding, store=None):
+    if isinstance(binding, dict) and binding.get('lane') == 'resource-scoped':
+        from . import resource_scope
+        return store is not None and resource_scope.claim_allowed(store, db, row, worker, binding)
+    if db.execute("SELECT id FROM resource_scope_runs WHERE task_id=? AND status IN ('reserved','claimed')",(row['id'],)).fetchone():
+        return False  # A normal/cross-worker claim cannot bypass a scoped reservation.
     wake = db.execute("SELECT * FROM dispatch_wakes WHERE task_id=? AND status!='settled'", (row['id'],)).fetchone()
     config = db.execute('SELECT * FROM dispatch_workers WHERE worker=?', (worker,)).fetchone()
     if not wake:
@@ -234,6 +247,7 @@ def claimed(store, db, row, worker, generation):
 
 
 def settle(store, worker, body):
+    from .resource_scope import active as scoped_active
     keys = {'wake_id', 'run_id', 'generation', 'token', 'result_sha256', 'outcome', 'execution_stopped',
             'input_settled', 'unknown_operations', 'unsettled_operations', 'unreceived_message_ids',
             'local_lock_released', 'readiness_revision', 'failure_classification'}
@@ -246,6 +260,7 @@ def settle(store, worker, body):
             and all(body[k] == [] for k in ('unknown_operations', 'unsettled_operations', 'unreceived_message_ids')),
             'Exact positive supervisor result and closed message/operation inventories required')
     with store.transaction() as db:
+        require(not scoped_active(db,worker),'Preserve active resource-scoped runtime',True)
         wake = db.execute('SELECT * FROM dispatch_wakes WHERE id=?', (body['wake_id'],)).fetchone()
         require(wake and wake['worker'] == worker and wake['run_id'] == body['run_id']
                 and wake['readiness_revision'] == body['readiness_revision']

@@ -93,7 +93,7 @@ def rpc_account(binary):
         selector.close()
 
 
-def validate_task(task, state, config):
+def validate_task(task, state, config, scoped=False):
     retry_ready = task.get('status') == 'blocked' and task.get('ready') is True
     if not retry_ready and (task.get('status') != 'queued' or task.get('owner')):
         raise ValueError('Only queued or service-eligible blocked work can be woken')
@@ -110,7 +110,7 @@ def validate_task(task, state, config):
     if (isinstance(local_event, dict) and local_event.get('enabled') is True
             and (not isinstance(dispatch_policy, dict) or dispatch_policy.get('enabled') is not True)):
         raise ValueError('Event delivery is not enrolled for this worker; no model or local admission')
-    if (isinstance(dispatch_policy, dict) and dispatch_policy.get('enabled')
+    if (not scoped and isinstance(dispatch_policy, dict) and dispatch_policy.get('enabled')
             and isinstance(dispatch_policy.get('task_ids'), list)
             and task.get('id') not in dispatch_policy['task_ids']):
         raise ValueError('Task is outside this worker\'s current dispatch pilot; no model or local admission')
@@ -185,6 +185,10 @@ def execute(config, run_dir, lock_fd):
             raise ValueError('Run belongs to another worker')
         record.update(status='running', supervisor_pid=os.getpid(), started_at=time.time())
         save(run_dir/'state.json', record)
+        scoped = record.get('resource_scope')
+        if scoped:
+            from .cli_resource_scope import before_execute
+            declaration = before_execute(config,ROOT,record,Client())
         command = [config['codex'], 'exec', '--ignore-user-config', '--approve-for-me',
                    '-c', 'sandbox_workspace_write.network_access=true',
                    '-c', 'model_reasoning_effort='+json.dumps(config['reasoning']),
@@ -193,6 +197,14 @@ def execute(config, run_dir, lock_fd):
                    '--add-dir', str(ROOT), '--add-dir', str(Path.home()/'Migration'),
                    '--add-dir', '/Volumes/NovaWork', '--json',
                    '--output-last-message', str(run_dir/'last-message.txt')]
+        if scoped:
+            # Scoped jobs get no broad Migration/native-volume/held-root writes.
+            command = [config['codex'],'exec','--ignore-user-config','--approve-for-me',
+                '-c','sandbox_workspace_write.network_access='+('true' if 'git-transfer' in declaration['operations'] else 'false'),
+                '-c','model_reasoning_effort='+json.dumps(config['reasoning']),'--model',config['model'],
+                '--cd',declaration['workspace'],'--add-dir',str(run_dir),
+                '--add-dir',str(Path.home()/'.config/nova-coordinator/claims'),'--json',
+                '--output-last-message',str(run_dir/'last-message.txt')]
         if record.get('resume_thread'):
             command += ['resume', record['resume_thread'], '-']
         else:
@@ -233,7 +245,11 @@ def finalize_result(run_dir, record, task, client):
     if any(read_original(run_dir/name) != value for name, value in originals.items()):
         raise ValueError('Original evidence changed before result commit')
     document = result.document()
-    path = run_dir/'run-result.json'
+    scoped=record.get('resource_scope')
+    if scoped:
+        from .cli_resource_scope import finalize_document
+        document=finalize_document(document,record)
+    path = run_dir/('scoped-run-result.json' if scoped else 'run-result.json')
     # Additive, crash-recoverable journal. Never replace prior receipts/results.
     if path.exists():
         if json.loads(read_original(path)[0]) != document:
@@ -250,6 +266,9 @@ def finalize_result(run_dir, record, task, client):
                   completion_verified=result.acceptance_complete,
                   result_schema=1, task_outcome=result.outcome,
                   execution_stopped=True, availability=result.availability)
+    if scoped:
+        record.update(status='scope-settled' if result.acceptance_complete else 'scope-needs-reconciliation',
+                      availability='scope-only',generic_available=False,wakeACKAuthorized=False,resourceReleaseAuthorized=False)
 
 
 def verify_completion(task, run_dir):
@@ -267,7 +286,7 @@ def verify_completion(task, run_dir):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-result', 'reconcile-preclaim', 'reconcile-preclaim-event', 'recovery-plan', 'recovery-observe', '_run',
+    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-result', 'reconcile-preclaim', 'reconcile-preclaim-event', 'recovery-plan', 'recovery-observe', 'scoped-check', 'scoped-wake', '_run',
                                             'message', 'message-status', 'message-readback'])
     parser.add_argument('--task')
     parser.add_argument('--queued-generation', type=int,
@@ -280,6 +299,7 @@ def main():
     parser.add_argument('--request-sha256', help='Exact recovery request or plan hash for --note-file')
     parser.add_argument('--review-file', type=Path, help='Exact independently reviewed record-read scope')
     parser.add_argument('--review-sha256')
+    parser.add_argument('--scope-revision', help='Exact enrolled resource policy revision')
     parser.add_argument('--check-only', action='store_true', help='Validate settle evidence without changing local admission or service state')
     parser.add_argument('--expected-fingerprint', help='Exact fingerprint returned by settlement check-only')
     args = parser.parse_args()
@@ -337,8 +357,12 @@ def main():
         # Release this supervisor's inherited lock before advertising capacity.
         fcntl.flock(args.lock_fd, fcntl.LOCK_UN)
         os.close(args.lock_fd)
-        from .cli_event_dispatch import supervisor_settled
-        supervisor_settled(Client(), config, ROOT/args.run_id)
+        if json.loads((ROOT/args.run_id/'state.json').read_text()).get('resource_scope'):
+            from .cli_resource_scope import completed
+            completed(Client(), config, ROOT/args.run_id)
+        else:
+            from .cli_event_dispatch import supervisor_settled
+            supervisor_settled(Client(), config, ROOT/args.run_id)
         return
     with (ROOT/'worker.lock').open('a+') as lock:
         try:
@@ -379,6 +403,18 @@ def main():
                 print(json.dumps({'disposition': 'busy', 'model_started': False}))
                 return
             raise ValueError('CLI worker is busy; no duplicate wake')
+        if args.operation in ('scoped-check', 'scoped-wake'):
+            from . import cli_resource_scope
+            if args.operation == 'scoped-check':
+                if not args.note_file or not args.request_sha256: parser.error('Exact policy reference required')
+                policy=cli_resource_scope.load({'path':str(args.note_file),'sha256':args.request_sha256})
+                fence=cli_resource_scope.validate_local(ROOT,config['worker'],policy,Client())
+                print(json.dumps({'policy_revision':cli_resource_scope.scope.digest(policy),'local_fence_sha256':fence,
+                                  'generic_available':False,'wakeACKAuthorized':False,'resourceReleaseAuthorized':False}))
+            else:
+                if not args.task or not args.scope_revision: parser.error('Exact scoped task and policy revision required')
+                print(json.dumps(cli_resource_scope.wake(config,ROOT,args.task,args.scope_revision,Client(),lock)))
+            return
         if args.operation == 'reconcile-result':
             prior = next((r for r in runs if r['run_id'] == args.run_id), None)
             if (not prior or runs[-1]['run_id'] != args.run_id
@@ -1178,12 +1214,13 @@ def validate_queued_wait(run, task, response, report, wait_receipt, worker, owne
 
 
 def spawn(record, run_dir, lock_fd):
-    if record.get('wake_id'):
+    if record.get('wake_id') or record.get('resource_scope'):
         # Exclusive intent precedes the one Popen. A crash in this gap remains
         # unknown; neither event delivery nor recovery may replay the intent.
         fd = os.open(run_dir/'model-spawn-intent.json', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, 'w') as stream:
-            json.dump({'run_id': record['run_id'], 'wake_id': record['wake_id']}, stream)
+            json.dump({'run_id': record['run_id'], 'wake_id': record.get('wake_id'),
+                       'scope_id': record.get('resource_scope',{}).get('authorization',{}).get('id')}, stream)
             stream.flush()
             os.fsync(stream.fileno())
     with (run_dir/'supervisor.log').open('ab') as log:

@@ -613,3 +613,11 @@ Scoped retained-metadata evidence collection has a separate
 It cannot change normal admission, typed results, availability or wake ACK.
 Its source qualification and plans authorize no held-guest access or native
 probe; unknown resource and actual approval/operation holds remain binding.
+
+### Resource-scoped eligibility
+
+An optional, separate source/inert/media lane can admit an exact disjoint task
+while a normal Mini wake remains held. See [resource-scoped eligibility](resource-scoped-eligibility.md)
+for the evidence contract and controlled rollout. It never advertises generic
+availability, clears a native/approval hold, ACKs the original wake, or grants OS
+permissions. Source integration alone does not enable it.
