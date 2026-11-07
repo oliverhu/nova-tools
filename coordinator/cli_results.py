@@ -81,6 +81,18 @@ def clean(values):
             raise ValueError('Contradictory settlement evidence')
 
 
+def cleanup_evidence_text(evidence):
+    """Normalize prose internally; original reports and receipt hashes stay exact."""
+    if isinstance(evidence, str) and evidence.strip():
+        return evidence
+    if (isinstance(evidence, list) and 1 <= len(evidence) <= 32
+            and all(isinstance(item, str) and item.strip() for item in evidence)):
+        text = '\n'.join(evidence)
+        if len(text.encode('utf-8')) <= 16384:
+            return text
+    raise ValueError('Actual owned-process settlement evidence required')
+
+
 def normalize_report(report, run):
     """One compatibility boundary; missing legacy proof is never invented."""
     version = report.get('result_schema')
@@ -107,8 +119,7 @@ def normalize_report(report, run):
             if report.get(key) is not True and cleanup.get(key) is not True:
                 raise ValueError('Legacy report lacks explicit settlement proof')
         evidence = cleanup.get('evidence', cleanup.get('cleanup_evidence'))
-    if not isinstance(evidence, str) or not evidence.strip():
-        raise ValueError('Actual owned-process settlement evidence required')
+    evidence = cleanup_evidence_text(evidence)
     outcome = report.get('outcome')
     if version is None and outcome in ('queued', 'queued_wait'):
         outcome = 'waiting'

@@ -543,7 +543,13 @@ outcome and deliberately requires explicit reconciliation.
 `run-result.json` is an additive schema-1 typed result with original evidence
 hashes. The originals remain byte-for-byte unchanged. One compatibility boundary
 normalizes legacy reports only when explicit positive settlement evidence exists;
-missing legacy proof is never inferred. Existing exceptional historical settlement
+missing legacy proof is never inferred. Cleanup evidence accepts the existing
+nonblank string or a list of 1–32 nonblank strings totaling at most 16 KiB in
+UTF-8 after newline joining. The list becomes internal cleanup text only; report,
+receipt and on-disk bytes retain their original structure and hashes. This does
+not substitute for positive stopped/checked/input predicates, explicit empty
+operation inventories, exact owner/generation/API/receipt bindings or real holds.
+Existing exceptional historical settlement
 commands remain explicit and retain their original evidence rules. No historical
 receipt needs migration or rewriting.
 
