@@ -53,6 +53,15 @@ class AppSessionTests(unittest.TestCase):
         with self.assertRaises(Conflict): self.store.claim(self.worker, t['id'])
         self.assertEqual('queued', self.store.detail(t['id'])['status'])
 
+    def test_account_metadata_is_optional_but_session_authentication_is_not(self):
+        replacement = {**self.registration, 'session_id': 'account-independent-chat',
+                       'account_sha256': None, 'expected_epoch': 1, 'session_token': 'e' * 64}
+        app.register(self.store, self.worker, replacement)
+        self.assertIsNone(app.status(self.store, self.worker)['session']['registration']['account_sha256'])
+        with self.assertRaises(Conflict): self.claim(self.task())
+        with self.assertRaises(Invalid):
+            app.register(self.store, self.worker, {**replacement, 'account_sha256': 'unverified'})
+
     def test_wrong_session_cannot_heartbeat_finish_or_defer(self):
         c = self.claim(self.task()); bad = {**self.outcome(c), 'app_binding': {**self.binding, 'token': 'wrong'}}
         for function in (self.store.heartbeat, self.store.finish):

@@ -344,7 +344,7 @@ def main():
     registration.add_argument('--session-file', type=Path, required=True)
     registration.add_argument('--session-id', required=True)
     registration.add_argument('--host-id', required=True)
-    registration.add_argument('--account-sha256', required=True)
+    registration.add_argument('--account-sha256', help='Optional observed account digest; omit when unavailable (not authentication)')
     registration.add_argument('--expected-epoch', type=int, required=True)
     adoption = sub.add_parser('app-adopt'); adoption.add_argument('--file', type=Path, required=True)
     for name in ('app-policy', 'app-qualify'):

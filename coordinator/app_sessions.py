@@ -103,7 +103,7 @@ def register(store, worker, body):
     keys = {'session_id', 'expected_epoch', 'host_id', 'account_sha256', 'session_token'}
     need(set(body) == keys and text(body['session_id']) and text(body['host_id'])
          and type(body['expected_epoch']) is int and body['expected_epoch'] >= 0
-         and hexid(body['account_sha256']) and isinstance(body['session_token'], str)
+         and (body['account_sha256'] is None or hexid(body['account_sha256'])) and isinstance(body['session_token'], str)
          and 32 <= len(body['session_token']) <= 256,
          'Distinct session, host, account digest, epoch CAS and private random token required')
     public = {k: v for k, v in body.items() if k != 'session_token'}

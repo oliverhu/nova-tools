@@ -11,7 +11,11 @@ does not enroll a machine, enable a chat, qualify permissions, retire a runtime,
 transfer an active claim or prove live migration acceptance. New machines first
 need their own supported Nova credential enrollment. Codex login/account access
 is independent; a recorded account digest is an attested identity, not an OAuth
-proof or a transferable login. No private key or token belongs in the repository.
+proof or a transferable login. The digest is optional (`null` when unobserved):
+machine credentials and private per-chat tokens authenticate the worker. Do not
+inspect account secrets or automate the app's own account UI to supply metadata.
+Account-independent enrollment does not remove task capability qualification.
+No private key or token belongs in the repository.
 
 ## Safe migration order
 
@@ -47,7 +51,7 @@ to a worker. Session files and claim files stay private on the local machine.
 - `GET /api/worker/app-session`: authenticated worker's policy, session identity,
   adoption and qualification. No session token or token hash is returned.
 - `POST /api/worker/app/register`: worker supplies `session_id`, `host_id`,
-  `account_sha256`, `expected_epoch` and a private random `session_token`.
+  nullable `account_sha256`, `expected_epoch` and a private random `session_token`.
   Epoch CAS rejects concurrent/stale replacements. Registration is disabled until
   policy is enabled. Replacement resets adoption/readiness; it cannot claim until
   independently qualified. Identical retries recover a lost response.
@@ -90,6 +94,24 @@ readback must use that representation. The helper and policy source commit are
 recorded separately from deployed service/client code.
 
 ## Durable handoffs
+
+### Human-authorized discard during replacement
+
+An explicit human decision to discard active work permits administrator
+`POST /api/tasks/ID/reconcile` with `action: "cancel"` for a running task only
+after actual execution has stopped and external state has been checked. Supply
+`generation`, `expected_owner`, `expected_updated`, `execution_stopped: true`,
+`external_state_checked: true`, concrete `evidence`, and `discard_decision` with
+the actual human `thread_id`, `response`, and `verified: true`. Reload on a race;
+never manufacture settlement from chat idleness. Active dispatch, scoped leases
+or task resource locks refuse this path and retain the audited abandonment flow.
+
+The service preserves the task's before state and human decision in an audit
+event, cancels without completing acceptance, fences the claim and pauses its
+worker atomically. Source, receipts, dependencies and counters remain. Read back
+the task after any lost response; cancellation is not automatic retry or cleanup.
+New app enrollment and independent readiness precede explicit unpause. Historical
+permission holds are not lifted or transferred into a replacement task.
 
 `nova-coord inbox-post --file /private/handoff.json` calls `/api/inbox/post`.
 The message has a stable 32-hex `request_id`, recipient `coordinator` or an enrolled

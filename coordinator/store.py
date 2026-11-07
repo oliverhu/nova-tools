@@ -1324,7 +1324,33 @@ class Store:
             self.expire(db)
             row = db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone()
             queued_cancel = row and row['status'] == 'queued' and action == 'cancel' and actor == 'admin'
-            if not row or (not queued_cancel and row["status"] not in ("held", "blocked", "failed", "pending_external_approval")):
+            running_cancel = row and row['status'] == 'running' and action == 'cancel' and actor == 'admin'
+            if running_cancel:
+                decision = body.get('discard_decision')
+                if decision is None:
+                    raise Conflict('Only stopped tasks can be reconciled without an explicit human discard decision')
+                if (not isinstance(decision, dict) or set(decision) != {'thread_id', 'response', 'verified'}
+                        or decision.get('verified') is not True):
+                    raise Invalid('Running cancellation requires an explicit verified human discard decision')
+                bounded(decision.get('thread_id'), 'decision.thread_id', 200)
+                bounded(decision.get('response'), 'decision.response', 4000)
+                if (body.get('generation') != row['generation'] or body.get('expected_owner') != row['owner']
+                        or body.get('expected_updated') != row['updated']):
+                    raise Conflict('Running task changed; reload before explicit cancellation')
+                # Cancellation is not a way to erase uncertain native/dispatch work.
+                from .event_dispatch import active as active_dispatch
+                from .resource_scope import active as active_scope
+                if (active_dispatch(db, row['owner']) or active_scope(db, row['owner'])
+                        or db.execute('SELECT 1 FROM locks WHERE task_id=?', (ident,)).fetchone()):
+                    raise Conflict('Settle or audit-abandon retained dispatch/resource operations first')
+                self.event(db, actor, 'human-discarded-running-task', ident, encoded({
+                    'decision': decision, 'before': self.public_task(row), 'evidence': evidence,
+                    'execution_stopped': True, 'external_state_checked': True,
+                    'acceptance_complete': False}))
+                # Fence a legacy worker before releasing its claim. App enrollment
+                # and independent readiness must precede an explicit unpause.
+                db.execute('UPDATE workers SET paused=1 WHERE id=?', (row['owner'],))
+            if not row or (not queued_cancel and not running_cancel and row["status"] not in ("held", "blocked", "failed", "pending_external_approval")):
                 raise Conflict("Only stopped tasks can be reconciled")
             if queued_cancel and body.get('generation') != row['generation']:
                 raise Conflict('Queued cancellation requires the current generation; reload before cancelling')
