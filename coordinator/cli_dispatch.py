@@ -5,6 +5,7 @@ The CLI worker owns those actions and its private claim files. An interrupted ru
 remains reconciliation-required, even when its process no longer exists.
 """
 import argparse
+import ast
 import fcntl
 import hashlib
 import json
@@ -497,7 +498,8 @@ def main():
                 if runs[-1]['run_id'] != prior['run_id']:
                     raise ValueError('Later local run prevents worker-only handoff settlement')
                 settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback,
-                                     operation='worker_only_wait', wait_receipt=wait_receipt, check_only=args.check_only)
+                                     operation='worker_only_wait', wait_receipt=wait_receipt, check_only=args.check_only,
+                                     worker_only_task=task)
                 print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': not args.check_only,
                                   **({'check_only': True, 'settlement_ready': True} if args.check_only else {}),
                                   'task_status_unchanged': task['status']}))
@@ -841,11 +843,12 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
     return cleanup_proof
 
 
-def settle_approved_wait(run_dir, prior, note, finish, report, readback, operation='approved_wait', wait_receipt=None, cleanup_proof=None, owner_review=None, check_only=False):
+def settle_approved_wait(run_dir, prior, note, finish, report, readback, operation='approved_wait', wait_receipt=None, cleanup_proof=None, owner_review=None, check_only=False, worker_only_task=None):
     """Called under worker.lock; keep byte-exact originals and append a local audit."""
     paths = [run_dir/n for n in ('state.json', 'finish-response.json', 'worker-report.json', 'task-readback.json')]
     backup = run_dir/(operation.replace('_', '-')+'-state-before.json'); audit = run_dir/'dispatch-settlement.json'
     values = [prior, finish, report, readback]
+    worker_only_binding = worker_only_wait_binding(worker_only_task) if operation == 'worker_only_wait' else None
     forbidden = []
     if operation in ('audited_wait', 'owner_reviewed_failed_wait', 'worker_only_wait'):
         paths.append(run_dir/'wait-receipt.json'); values.append(wait_receipt)
@@ -869,6 +872,10 @@ def settle_approved_wait(run_dir, prior, note, finish, report, readback, operati
     if owner_review is not None:
         if operation != 'owner_reviewed_failed_wait' or any(read_cleanup_proof(p) != value for p, value in owner_review['snapshots'].items()):
             raise ValueError('Owner-reviewed evidence changed before settlement')
+    if worker_only_binding is not None:
+        fresh = Client().request('/api/tasks/'+prior['task'])
+        if worker_only_wait_binding(fresh) != worker_only_binding:
+            raise ValueError('Worker-only task or history changed before settlement commit')
     if check_only:
         return
     record = {**note, 'operation': operation, 'recorded_at': time.time(), 'prior_state': prior,
@@ -1063,6 +1070,70 @@ def validate_audited_wait(run, task, response, report, wait_receipt, readback, n
         raise ValueError('Exact authenticated admin waiting disposition required')
 
 
+WORKER_ONLY_WAIT_KEYS = ('id', 'generation', 'step', 'status', 'owner', 'last_owner', 'requirements', 'dependencies',
+                         'result', 'fix_attempts_used', 'total_fix_attempts', 'attempts_host', 'attempt_base',
+                         'reassignment_count', 'attempt_exception', 'attempt_allowance', 'steps', 'request_key')
+
+
+def worker_only_wait_binding(task):
+    """Freeze the same authoritative fields as validation, including all history."""
+    keys = (*WORKER_ONLY_WAIT_KEYS, 'receipts', 'events', 'approval')
+    if not isinstance(task, dict) or any(key not in task for key in keys):
+        raise ValueError('Complete worker-only task/history snapshot required')
+    return json.dumps({key: task[key] for key in keys}, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+def worker_only_wait_claim(events, task, receipt, worker):
+    """Resolve one real claim; only typed owner phase events may precede its wait."""
+    if (type(receipt.get('at')) not in (int, float) or not math.isfinite(receipt['at'])
+            or any(not isinstance(e, dict) or type(e.get('id')) is not int or e['id'] <= 0
+           or e.get('task_id') != task['id'] or not isinstance(e.get('actor'), str) or not e['actor']
+           or type(e.get('at')) not in (int, float) or not math.isfinite(e['at']) for e in events)):
+        raise ValueError('Exact ordered task event identities and finite times required')
+    if any(left['id'] >= right['id'] or left['at'] > right['at'] for left, right in zip(events, events[1:])):
+        raise ValueError('Task event order or timestamps changed')
+    matches = []
+    previous_generation = 0
+    for index, event in enumerate(events[:-1]):
+        if event.get('kind') != 'claimed':
+            continue
+        detail = event.get('detail')
+        match = re.fullmatch(r'Step ([1-9][0-9]*); generation ([1-9][0-9]*); resources (\[.*\])', detail) if isinstance(detail, str) and len(detail) <= 4000 else None
+        if match is None:
+            raise ValueError('Actual structured claim generation and step audit required')
+        try:
+            resources = ast.literal_eval(match[3])
+        except (ValueError, SyntaxError, RecursionError):
+            raise ValueError('Actual claim resource audit required') from None
+        if (not isinstance(resources, list) or len(resources) > 50
+                or any(not isinstance(r, str) or not r or len(r) > 200 for r in resources)
+                or len(set(resources)) != len(resources)):
+            raise ValueError('Bounded original claim resources required')
+        generation = int(match[2])
+        if not previous_generation < generation <= task['generation']:
+            raise ValueError('Claim generations are duplicated, regressed or newer than this wait')
+        previous_generation = generation
+        if generation == task['generation']:
+            matches.append((index, event, int(match[1])))
+    if len(matches) != 1:
+        raise ValueError('Unique matching generation claim required')
+    index, claim, step = matches[0]
+    if claim['actor'] != worker or step != task['step']+1:
+        raise ValueError('Matching generation claim has another owner or step')
+    for phase in events[index+1:-1]:
+        try:
+            detail = json.loads(phase.get('detail', ''))
+        except (ValueError, TypeError):
+            raise ValueError('Typed owner phase audit required') from None
+        if (phase.get('kind') != 'execution-phase' or phase['actor'] != worker
+                or not isinstance(detail, dict) or set(detail) != {'generation', 'phase'}
+                or type(detail['generation']) is not int or detail['generation'] != task['generation']
+                or detail['phase'] not in ('implementing', 'testing', 'cleanup')
+                or not claim['at'] <= phase['at'] <= receipt['at']):
+            raise ValueError('Intervening ownership, state or phase change prevents handoff settlement')
+    return claim
+
+
 def validate_worker_only_wait(run, task, response, report, wait_receipt, readback, note, worker):
     """A worker-only defer names a destination, never a replacement original owner."""
     if any(not isinstance(v, dict) for v in (run, task, response, report, wait_receipt, readback, note)):
@@ -1085,9 +1156,7 @@ def validate_worker_only_wait(run, task, response, report, wait_receipt, readbac
                    for k in ('created_at', 'started_at', 'ended_at'))
             or not run['created_at'] <= run['started_at'] <= run['ended_at']):
         raise ValueError('Exact ended owning run and unowned worker-only destination required')
-    keys = ('id', 'generation', 'step', 'status', 'owner', 'last_owner', 'requirements', 'dependencies',
-            'result', 'fix_attempts_used', 'total_fix_attempts', 'attempts_host', 'attempt_base',
-            'reassignment_count', 'attempt_exception', 'attempt_allowance', 'steps', 'request_key')
+    keys = WORKER_ONLY_WAIT_KEYS
     if (any(k not in response or response[k] != task.get(k) for k in keys)
             or any(k not in readback or readback[k] != task.get(k)
                    for k in (*keys, 'receipts', 'events', 'approval'))):
@@ -1098,6 +1167,7 @@ def validate_worker_only_wait(run, task, response, report, wait_receipt, readbac
     for value in (run, task, report, cleanup, wait_receipt, note, response, readback):
         if (value.get('human_stop') is True or value.get('approval_request')
                 or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []
+                or value.get('unresolved_observations', []) != [] or value.get('unreceived_message_ids', []) != []
                 or value.get('acceptance_complete') is True
                 or any(k in value and value[k] is not True
                        for k in ('execution_stopped', 'external_state_checked', 'input_settled'))):
@@ -1126,9 +1196,10 @@ def validate_worker_only_wait(run, task, response, report, wait_receipt, readbac
     receipts, events = task.get('receipts'), task.get('events')
     if not isinstance(receipts, list) or not receipts or not isinstance(events, list) or len(events) < 2:
         raise ValueError('Owning claim and waiting receipt/audit required')
-    receipt = receipts[-1]; claim, event = events[-2:]
-    if any(not isinstance(v, dict) for v in (receipt, claim, event)):
+    receipt = receipts[-1]; event = events[-1]
+    if any(not isinstance(v, dict) for v in (receipt, event)):
         raise ValueError('Structured original handoff records required')
+    claim = worker_only_wait_claim(events, task, receipt, worker)
     envelope = receipt.get('receipt', {}); body = envelope.get('receipt', {}) if isinstance(envelope, dict) else {}
     try:
         detail = json.loads(event.get('detail', ''))

@@ -163,6 +163,10 @@ settlement. Settlement
 requires the exact original finish and full readback, unchanged receipts/events
 and counters, the owning claim followed by its stopped/checked waiting audit,
 and positive cleanup with no unknown effects or independent approval holds.
+The claim is selected uniquely by its original generation, owner and step;
+well-formed owner `execution-phase` events may intervene before the wait.
+Intervening claims or other state changes refuse settlement. Full task history
+is checked again immediately before check-only returns or settlement is written.
 The same check-only/apply commands preserve all original bytes, back up the old
 state as `worker-only-wait-state-before.json` and append a local settlement audit.
 They neither manufacture dependencies nor claim or wake the destination worker.
