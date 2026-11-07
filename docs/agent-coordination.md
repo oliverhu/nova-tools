@@ -685,13 +685,14 @@ Legacy text requests/readbacks remain unchanged. No payloads/facts enter status
 telemetry beyond bounded explicit inspection facts; original files are never
 embedded in telemetry. Supervisor closeout retains unacknowledged media evidence.
 
-Use the existing `rollout-cli-results.py` `media-v1` profile (only cli_media and
-cli_messages) to freeze before/after bytes, apply and verify at the owned safe
+Use the existing `rollout-cli-results.py` `media-v1` profile (`cli_media.py`,
+`cli_messages.py` and `cli_event_dispatch.py`) to freeze before/after bytes, apply and verify at the owned safe
 boundary, or roll back exact hashes. No service restarts, unrelated modules,
 credentials or held runs change. Both Minis require their own actual rollout
 and readback. A held guest stays held; local tests or one guest's result cannot
-complete cross-machine acceptance. Keep incomplete work on its task branch until
-required actual acceptance and normal audited main integration are complete.
+complete cross-machine acceptance. A qualified source landing must identify any pending guest rollout or acceptance;
+it does not complete the required both-Mini qualification. Preserve the original
+acceptance and use a genuine eligibility prerequisite for a held guest.
 
 ### Resource-scoped eligibility
 
