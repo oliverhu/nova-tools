@@ -63,3 +63,26 @@ and `skill/SKILL.md` for the operational details. The portable folder remains
 self-contained without them. On another organization/deployment, retain the
 separation of responsibilities but discover its real roles, authorization and
 queue policy instead of importing Nova's schedules or release authority.
+
+## Compact actionable communication
+
+Use one handoff containing task/generation, changed state or requested action,
+actual evidence/receipt paths (and source commit when relevant), next action and
+its owner, remaining limits and cleanup. Preserve current acceptance, claims,
+dependencies, human stops and unknown operations. A handoff is not a claim,
+approval, qualified result or completed service transition.
+
+Act on an actionable request within existing authority. Send another message only
+for a material state change, concrete blocker, required decision or requested
+readback. Do not reply merely “acknowledged”, echo unchanged status or request an
+acknowledgment of an acknowledgment. No new chats, relays, timers or polls. This
+does not suppress required service/message protocol acknowledgments, actual hash
+adoption readbacks, approval receipts, or finish-response/fresh-API verification.
+Delivery, installation, actor adoption and actual acceptance stay distinct.
+
+Instruction upkeep uses the existing Coordinator activity. Record each real host's
+source commits, expected/observed installed hashes and verification time; record
+each actual actor's loaded hashes/run or chat separately at a safe boundary.
+Unobserved installation or adoption stays pending with its owner and next action;
+do not copy another host's receipt or ask actors to acknowledge unchanged bytes
+again. Dispatcher reports changes to these records, not repeated reminders.
