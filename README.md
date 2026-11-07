@@ -699,3 +699,11 @@ separately and update existing observers through their established owner route.
 Never package an older minimal service checkout over the current client bundle.
 No app publication, TestFlight operation, new schedule or direct database edit is
 part of this maintenance flow.
+
+## Explicit worker session abandonment
+
+[Audited session reset](docs/worker-session-reset.md) archives old local records,
+retains unknown resource and approval holds, and establishes an explicitly adopted
+fresh epoch on the same worker. It is separate from historical cleanup and requires
+actual human authority, exact archive/history CAS and disjoint fresh task scope.
+Source support alone does not reset, start or cut over a worker.

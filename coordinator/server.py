@@ -98,10 +98,22 @@ class Handler(BaseHTTPRequestHandler):
             if origin not in ("https://"+self.headers.get("Host",""),"http://"+self.headers.get("Host","")):
                 return self.respond(403,{"error":"Cross-origin requests are not allowed"})
         store=self.server.store
+        if self.command=='POST' and actor in WORKERS:
+            from .session_epochs import protocol
+            if not protocol(store,actor,self.headers.get('X-Nova-Session-Epoch')):
+                return self.respond(409,{'error':'Stale worker session epoch; no operation authorized'})
         if self.command=="GET":
             if path == '/api/worker/app-session':
                 from . import app_sessions
                 return self.respond(200, app_sessions.status(store, actor))
+            if path=='/api/worker/session':
+                from . import session_epochs
+                if actor not in WORKERS or not session_epochs.protocol(store,actor,self.headers.get('X-Nova-Session-Epoch')):
+                    return self.respond(409,{'error':'Exact current worker epoch required'})
+                with store.connection() as db:
+                    row=session_epochs.current(db,actor)
+                    if not row:raise Conflict('Worker has no active reset epoch')
+                    return self.respond(200,{'worker':actor,'epoch':row['epoch'],'policy':json.loads(row['policy']),'archive':json.loads(row['archive']),'paused':bool(db.execute('SELECT paused FROM workers WHERE id=?',(actor,)).fetchone()[0])})
             if path == '/api/worker/resource-scope/policy':
                 from .workers import MINI_VM_WORKERS
                 if actor not in MINI_VM_WORKERS:
@@ -154,6 +166,17 @@ class Handler(BaseHTTPRequestHandler):
                 if actor != 'admin': return self.respond(403, {'error':'Administrator required'})
                 from . import task_readiness
                 return self.respond(200, task_readiness.update(store, actor, readiness_task[1], body))
+            adopted=re.fullmatch(r'/api/tasks/([0-9a-f]{16})/session-scope',path)
+            if adopted:
+                if actor!='admin':return self.respond(403,{'error':'Administrator task-scope refinement required'})
+                from .session_epochs import scope_task
+                return self.respond(200,scope_task(store,actor,adopted[1],body))
+            reset=re.fullmatch(r'/api/workers/([a-z0-9-]+)/session-reset/(plan|apply)',path)
+            if reset:
+                if actor!='admin':return self.respond(403,{'error':'Administrator required for explicit session abandonment'})
+                from . import session_epochs
+                if reset[2]=='plan' and body!={}:raise Invalid('Session reset plan takes an empty object')
+                return self.respond(200,session_epochs.plan(store,reset[1]) if reset[2]=='plan' else session_epochs.apply(store,actor,reset[1],body))
             capability_task = re.fullmatch(r'/api/tasks/([0-9a-f]{16})/require-capabilities', path)
             if capability_task:
                 if actor != 'admin':

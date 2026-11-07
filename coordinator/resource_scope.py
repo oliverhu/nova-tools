@@ -171,7 +171,7 @@ def validate_policy(policy):
          and all(type(v) is str and v.strip() for v in policy['review_source'].values()),'Actual scoped review provenance/expiry required')
 
 
-def declaration(task,policy):
+def declaration(task,policy,media_root=None):
     need(task.get('status')=='queued' and task.get('owner') is None and task.get('task_type')!='publish' and task.get('compute')=='standard'
          and task.get('id') not in {h['task'] for h in policy['held']}, 'Held/native/publish/retry task cannot borrow a disjoint scope')
     requirements=task.get('requirements',{});scope=requirements.get('resource_scope')
@@ -196,7 +196,7 @@ def declaration(task,policy):
         if r['kind']=='capability':need(r['value'] in scope['required_capabilities'],'Undeclared capability resource')
     need(writable,'Isolated report/output workspace must be explicit')
     need({r['value'] for r in scope['resources'] if r['kind']=='capability'}==set(scope['required_capabilities']),'Every required capability must be resource-declared')
-    if scope['kind']=='media':need(any(r['kind']=='media' for r in scope['resources']),'Exact read-only media content/path required')
+    if scope['kind']=='media':need(any(r['kind']=='media' for r in scope['resources']) or (media_root is not None and 'cli-media-v1' in scope['required_capabilities'] and any(r['kind']=='path' and r['value']==media_root and r['access']=='read' for r in scope['resources'])),'Exact media content or qualified new-epoch inbox namespace required')
     if 'git-transfer' in scope['operations']:need(any(r['kind']=='git' for r in scope['resources']),'Exact source Git remote resource required')
     return scope
 

@@ -28,10 +28,16 @@ CREATE TABLE IF NOT EXISTS dispatch_wakes (
  phase TEXT NOT NULL DEFAULT 'admission', phase_at REAL,
  settlement TEXT NOT NULL DEFAULT '{}');
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_worker_wake ON dispatch_wakes(worker)
- WHERE status != 'settled';
+ WHERE status NOT IN ('settled','quarantined');
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_task_wake ON dispatch_wakes(task_id)
  WHERE status != 'settled';
 """
+
+
+def ensure_epoch_index(db):
+    row=db.execute("SELECT sql FROM sqlite_master WHERE name='one_active_worker_wake'").fetchone()
+    if row and 'quarantined' not in row[0]:
+        db.executescript("BEGIN IMMEDIATE; DROP INDEX one_active_worker_wake; CREATE UNIQUE INDEX one_active_worker_wake ON dispatch_wakes(worker) WHERE status NOT IN ('settled','quarantined'); COMMIT;")
 
 
 def require(value, message, conflict=False):
@@ -49,7 +55,7 @@ def encoded(value):
 
 
 def active(db, worker):
-    return db.execute("SELECT * FROM dispatch_wakes WHERE worker=? AND status!='settled'", (worker,)).fetchone()
+    return db.execute("SELECT * FROM dispatch_wakes WHERE worker=? AND status NOT IN ('settled','quarantined')", (worker,)).fetchone()
 
 
 def require_capabilities(store, actor, task_id, body):
@@ -173,6 +179,8 @@ def candidate(store, db, worker, task_id=None):
             continue
         if db.execute("SELECT id FROM resource_scope_runs WHERE task_id=? AND status IN ('reserved','claimed')",(row['id'],)).fetchone():
             continue
+        from .session_epochs import admit
+        if not admit(store,db,worker,store.public_task(row)):continue
         scheduling = store.scheduling(db, row)
         if (store.fits(row, own) and store.assignment_allowed(row, worker)
                 and scheduling['ready'] and store.candidate(db, row) == worker):

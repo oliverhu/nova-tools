@@ -41,7 +41,14 @@ class Client:
             raise ValueError("Use HTTPS or loopback")
         ctx=ssl.create_default_context(cafile=self.config.get("ca_file"))
         self.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPSHandler(context=ctx))
+        self.session_epoch=self.config.get('session_epoch')
+        if self.session_epoch is not None:
+            import re
+            if not isinstance(self.session_epoch,str) or not re.fullmatch('[0-9a-f]{32}',self.session_epoch):
+                raise ValueError('Exact local session epoch required')
         self.state=self.path.parent/"claims"
+        if self.session_epoch:self.state=self.state/'epochs'/self.session_epoch
+        self.state.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
         self.state.mkdir(mode=0o700,exist_ok=True)
         from .app_client import attach
         attach(self, os.environ.get('NOVA_APP_SESSION_FILE'))
@@ -56,7 +63,7 @@ class Client:
                 body = {**body, 'app_binding': session}
         request=urllib.request.Request(self.config["url"].rstrip("/")+path,
             data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization":"Bearer "+self.config["token"],"Content-Type":"application/json"})
+            headers={"Authorization":"Bearer "+self.config["token"],"Content-Type":"application/json",**({"X-Nova-Session-Epoch":self.session_epoch} if self.session_epoch else {})})
         try:
             with self.opener.open(request,timeout=15) as response:
                 return json.load(response)
@@ -175,7 +182,7 @@ class Client:
     def apply_approval(self, receipt):
         payload=approval_payload(receipt)
         ident=approval_id(payload)
-        path=self.path.parent/'approvals'/(ident+'.json')
+        path=self.approval_directory()/(ident+'.json')
         if not path.exists():
             body={**payload,'tasks':[]}
             for task in payload['tasks']:
@@ -209,9 +216,14 @@ class Client:
         self.save_approval(path,{**journal,'state':'applied','readback':verified})
         return verified
 
+    def approval_directory(self):
+        root=self.path.parent/'approvals'
+        epoch=getattr(self,'session_epoch',None)
+        return root/'epochs'/epoch if epoch else root
+
     def recover_approvals(self):
         results=[]
-        for path in sorted((self.path.parent/'approvals').glob('*.json')):
+        for path in sorted(self.approval_directory().glob('*.json')):
             journal=json.loads(path.read_text())
             if journal.get('state')=='pending':
                 try:results.append(self.deliver_approval(path,journal))

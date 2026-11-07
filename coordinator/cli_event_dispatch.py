@@ -43,6 +43,7 @@ def readiness(config):
         raise ValueError('Event readiness manifest changed')
     manifest = json.loads(raw)
     keys = ('worker', 'hostname', 'account_email_sha256', 'model', 'reasoning')
+    if config.get('session_epoch'):keys += ('session_epoch',)
     if (manifest.get('schema') != 1 or config.get('admission') != 'enabled'
             or socket.gethostname() != config.get('hostname')
             or any(manifest.get(k) != config.get(k) for k in keys)

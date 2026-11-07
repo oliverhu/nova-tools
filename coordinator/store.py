@@ -141,6 +141,9 @@ class Store:
             db.executescript(resource_scope.SCHEMA)
             from . import app_sessions
             db.executescript(app_sessions.SCHEMA)
+            from . import session_epochs
+            db.executescript(session_epochs.SCHEMA)
+            event_dispatch.ensure_epoch_index(db)
             columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
             if "last_owner" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN last_owner TEXT")
@@ -390,8 +393,10 @@ class Store:
     def candidate(self, db, task):
         workers = db.execute("""SELECT * FROM workers WHERE paused=0 AND seen>? AND id NOT IN
             (SELECT owner FROM tasks WHERE status IN ('running','held') AND owner IS NOT NULL)""", (self.clock()-90,)).fetchall()
+        from .session_epochs import admit
         workers = [w for w in workers if self.fits(task, w) and self.assignment_allowed(task, w['id'])
-                   and not task_readiness.view(self, db, task, w['id'])['reason']]
+                   and not task_readiness.view(self, db, task, w['id'])['reason']
+                   and admit(self, db, w['id'], self.public_task(task))]
         if not workers:
             return None
         if task['status'] == 'blocked':
@@ -636,6 +641,9 @@ class Store:
                         app_sessions.ready(self, db, worker, app_binding, row)
                     except Conflict:
                         continue
+                from .session_epochs import admit
+                if not admit(self,db,worker,self.public_task(row)):
+                    continue
                 if not event_dispatch.claim_allowed(db, row, worker, dispatch_binding, store=self):
                     continue
                 if task_readiness.view(self, db, row, worker)['reason']:
@@ -1286,6 +1294,9 @@ class Store:
                 'approval_id': exception['request']['approval_id'], 'generation': row['generation']}))
 
     def approval_state(self, db, row):
+        from .session_epochs import public_quarantine
+        quarantine=public_quarantine(db,row['id'])
+        if quarantine:return quarantine['original_approval']
         if row['status'] == 'pending_external_approval':
             return {'state':'awaiting_decision'}
         if row['status'] not in ('queued','running'):
@@ -1460,6 +1471,9 @@ class Store:
                 dispatch = projection(self, db, row['id'])
                 if dispatch is not None:
                     w['event_dispatch'] = dispatch
+                from .session_epochs import current as current_epoch
+                epoch=current_epoch(db,w['id'])
+                if epoch:w['session_epoch']={'id':epoch['epoch'],'restricted':True,'old_cleanup_verified':False}
                 from .resource_scope import projection as scoped_projection
                 scoped = scoped_projection(self, db, w['id'])
                 if scoped is not None: w['resource_scope'] = scoped
@@ -1492,6 +1506,9 @@ class Store:
             task['approval'] = self.approval_state(db,row)
             task["receipts"]=[{**dict(r),"receipt":json.loads(r["receipt"])} for r in db.execute("SELECT * FROM receipts WHERE task_id=? ORDER BY at",(ident,))]
             task["events"]=[dict(r) for r in db.execute("SELECT * FROM events WHERE task_id=? ORDER BY id",(ident,))]
+            from .session_epochs import public_quarantine
+            quarantine=public_quarantine(db,ident)
+            if quarantine:task['session_quarantine']=quarantine
             task['outcome_corrections']=[self._correction_readback(r) for r in db.execute(
                 'SELECT * FROM outcome_corrections WHERE task_id=? ORDER BY at', (ident,))]
             task['attempt_corrections']=[self._correction_readback(r) for r in db.execute(
