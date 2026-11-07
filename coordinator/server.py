@@ -125,6 +125,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            if path == '/api/task-decisions/revise':
+                if actor != 'admin': return self.respond(403, {'error':'Administrator required'})
+                from . import task_readiness
+                return self.respond(200, task_readiness.decision(store, actor, body))
+            readiness_task = re.fullmatch(r'/api/tasks/([0-9a-f]{16})/readiness', path)
+            if readiness_task:
+                if actor != 'admin': return self.respond(403, {'error':'Administrator required'})
+                from . import task_readiness
+                return self.respond(200, task_readiness.update(store, actor, readiness_task[1], body))
             capability_task = re.fullmatch(r'/api/tasks/([0-9a-f]{16})/require-capabilities', path)
             if capability_task:
                 if actor != 'admin':
