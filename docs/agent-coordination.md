@@ -553,6 +553,24 @@ Existing exceptional historical settlement
 commands remain explicit and retain their original evidence rules. No historical
 receipt needs migration or rewriting.
 
+A retained approved question from an earlier generation is classified separately
+from a current human hold. The lifecycle reducer requires the exact original
+pending receipt/result/question, authenticated approval source and application
+event (including its immutable cross-chat link when used), every subsequent
+owning claim and waiting receipt/event, and unchanged full fresh API history.
+Current questions, human stops, missing or mismatched approval history and later
+unsupported transitions still refuse classification. Original question, consent
+scope, receipts and events are never stripped or rewritten; this is no new
+permission decision or actor qualification. Historical cleanup path strings stay
+opaque metadata, never proof of current cleanup.
+
+Historical-question classification cannot settle unknown operations or resource
+uncertainty. Nonempty `unresolved_observations` in current report/wait cleanup
+requires independent owner reconciliation even when the ordinary unknown/unsettled
+arrays are empty. False census or runtime-cleanup acceptance is never changed to
+a pass. Fresh API comparison includes full events at the final result commit, so
+an intervening history change cannot publish a stale availability result.
+
 After a crash between the result journal and state commit, use
 `nova-cli-worker reconcile-result --run-id RUN` on the owning guest. It requires
 the latest run, the released worker lock, an actually observed child exit, matching
