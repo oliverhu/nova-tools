@@ -1,5 +1,8 @@
 """Contract cases for end-of-child reduction, immutability and crash recovery."""
 import copy
+import contextlib
+import io
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -130,6 +133,44 @@ class ResultTests(unittest.TestCase):
             self.assertEqual(originals, {n: (root/n).read_bytes() for n in docs})
             adapter.save(root/'run-result.json', {'schema': 99})
             with self.assertRaises(ValueError): adapter.finalize_result(root, prior, task, client)
+
+    def test_next_wake_uses_settled_local_result_but_keeps_service_and_account_gates(self):
+        for outcome in ('completed', 'blocked', 'pending_external_approval', 'unknown'):
+            run, task, docs = fixture('blocked' if outcome == 'unknown' else outcome)
+            run['created_at'] = 1.0
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); run_dir = root/run['run_id']; run_dir.mkdir()
+                for name, value in docs.items(): adapter.save(run_dir/name, value)
+                client = Mock(); client.config = {'worker': 'mini'}; client.request.return_value = task
+                if outcome != 'unknown': adapter.finalize_result(run_dir, run, task, client)
+                adapter.save(run_dir/'state.json', run)
+                next_task = {'id': 'c'*16, 'status': 'queued', 'generation': 0,
+                             'owner': None, 'requirements': {}, 'dependencies': [],
+                             'title': 'fixture next task', 'description': 'no model invocation'}
+                config = {'worker': 'mini', 'hostname': 'fixture', 'admission': 'enabled',
+                          'account_email_sha256': hashlib.sha256(b'fixture@example.test').hexdigest(),
+                          'model': 'selected-model', 'reasoning': 'medium', 'codex': 'fixture'}
+                adapter.save(root/'config.json', config)
+                snapshot = {'tasks': [task, next_task], 'workers': [{'id': 'mini', 'online': True, 'capacity': {}}]}
+                client.request.side_effect = lambda path: snapshot if path == '/api/state' else next_task
+                account = ({'type': 'chatgpt', 'email': 'fixture@example.test'},
+                           [{'model': 'selected-model', 'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}]}],
+                           {'ordinaryUsageAllowed': True})
+                with patch.object(adapter, 'ROOT', root), patch.object(adapter, 'CONFIG', root/'config.json'), \
+                     patch.object(adapter.socket, 'gethostname', return_value='fixture'), \
+                     patch.object(adapter, 'Client', return_value=client), \
+                     patch.object(adapter, 'rpc_account', return_value=account) as account_check, \
+                     patch.object(adapter, 'spawn') as spawn, \
+                     patch('sys.argv', ['worker', 'wake', '--task', next_task['id']]), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    if outcome == 'unknown':
+                        with self.assertRaises(ValueError): adapter.main()
+                        account_check.assert_not_called(); spawn.assert_not_called()
+                    else:
+                        adapter.main()
+                        account_check.assert_called_once_with('fixture')
+                        self.assertEqual(spawn.call_args.args[0]['task'], next_task['id'])
+                        self.assertEqual(spawn.call_args.args[0]['account_email_sha256'], config['account_email_sha256'])
 
     def test_real_supervisor_child_exit_and_additive_result(self):
         for outcome in ('completed', 'blocked', 'pending_external_approval'):
