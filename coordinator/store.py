@@ -16,7 +16,7 @@ from pathlib import Path
 from .approvals import approval_payload, approval_id
 from .workers import WORKERS, INITIALLY_PAUSED_WORKERS
 from .outcomes import finish_outcome
-from . import publication_policy, approval_links
+from . import publication_policy, approval_links, task_readiness
 from .attempt_accounting import BINDING, correction_payload
 from .attempt_allowances import allowance_payload
 
@@ -134,6 +134,7 @@ class Store:
             db.executescript(SCHEMA)
             db.executescript(publication_policy.SCHEMA)
             db.executescript(approval_links.SCHEMA)
+            db.executescript(task_readiness.SCHEMA)
             from . import event_dispatch
             db.executescript(event_dispatch.SCHEMA)
             from . import resource_scope
@@ -291,8 +292,10 @@ class Store:
         if type(priority) is not int or not 0 <= priority <= 100:
             raise Invalid("priority must be 0–100")
         requirements = body.get("requirements", {})
-        if not isinstance(requirements, dict) or set(requirements) - {"memory_gb", "disk_gb", "cpus", "capabilities", "worker", "resource_scope"}:
+        if not isinstance(requirements, dict) or set(requirements) - {"memory_gb", "disk_gb", "cpus", "capabilities", "worker", "resource_scope", "readiness"}:
             raise Invalid("Invalid requirements")
+        if "readiness" in requirements:
+            task_readiness.validate_declaration(requirements["readiness"])
         if "resource_scope" in requirements and not isinstance(requirements["resource_scope"], dict):
             raise Invalid("Invalid resource scope declaration")
         for field in ("memory_gb", "disk_gb", "cpus"):
@@ -387,7 +390,8 @@ class Store:
     def candidate(self, db, task):
         workers = db.execute("""SELECT * FROM workers WHERE paused=0 AND seen>? AND id NOT IN
             (SELECT owner FROM tasks WHERE status IN ('running','held') AND owner IS NOT NULL)""", (self.clock()-90,)).fetchall()
-        workers = [w for w in workers if self.fits(task, w) and self.assignment_allowed(task, w['id'])]
+        workers = [w for w in workers if self.fits(task, w) and self.assignment_allowed(task, w['id'])
+                   and not task_readiness.view(self, db, task, w['id'])['reason']]
         if not workers:
             return None
         if task['status'] == 'blocked':
@@ -469,10 +473,15 @@ class Store:
         result = {"next_worker": None, "next_worker_label": "—", "ready": False,
                   "waiting_reason": "", "waiting_dependencies": []}
         if row['status'] == 'running':
-            return {**result, 'next_worker': row['owner'], 'next_worker_label': row['owner']}
+            return {**result, 'next_worker': row['owner'], 'next_worker_label': row['owner'],
+                    'task_readiness': task_readiness.view(self, db, row, row['owner'], execution=True)}
         policy_reason = publication_policy.admission(self, db, row) if row['status'] in ('queued', 'blocked') else ''
         if policy_reason and row['status'] in ('queued', 'blocked'):
             return {**result, 'waiting_reason': policy_reason, 'next_worker_label': 'Publication policy wait'}
+        readiness = task_readiness.view(self, db, row)
+        result['task_readiness'] = readiness
+        if readiness['reason'] and row['status'] in ('queued', 'blocked'):
+            return {**result, 'waiting_reason': readiness['reason'], 'next_worker_label': 'Task readiness wait'}
         if row['status'] == 'pending_external_approval':
             return {**result, 'next_worker_label': 'Awaiting external approval',
                     'waiting_reason': 'No automatic retries. Resume only after approval is verified.'}
@@ -629,6 +638,8 @@ class Store:
                         continue
                 if not event_dispatch.claim_allowed(db, row, worker, dispatch_binding, store=self):
                     continue
+                if task_readiness.view(self, db, row, worker)['reason']:
+                    continue
                 if publication_policy.admission(self, db, row):
                     continue
                 if row['status'] == 'blocked' and (self.retry_wait(row) or self.candidate(db, row) != worker):
@@ -676,6 +687,7 @@ class Store:
                            (worker,hashlib.sha256(token.encode()).hexdigest(),generation,now+self.lease_seconds,now,row["id"]))
                 db.execute("UPDATE workers SET last_claim=? WHERE id=?", (now,worker))
                 app_sessions.claimed(db, row, generation, worker, session)
+                task_readiness.claimed(self, db, row, worker, generation)
                 event_dispatch.claimed(self, db, row, worker, generation)
                 from . import resource_scope
                 resource_scope.claimed(self, db, row, worker, generation)
@@ -699,6 +711,7 @@ class Store:
             row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"),body.get("app_binding"))
             if row["status"] != "running":
                 raise Conflict("Task is not running; stop execution and inspect its recorded outcome")
+            task_readiness.guard(self, db, row, worker, body.get("phase"))
             progress = body.get("progress", row["progress"])
             phase = body.get('phase')
             from . import app_sessions
@@ -736,6 +749,8 @@ class Store:
             row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"),body.get("app_binding"))
             from . import app_sessions
             app_sessions.guard(self, db, worker, row, body.get('app_binding'), cleanup=outcome != 'completed')
+            if outcome == 'completed':
+                task_readiness.guard(self, db, row, worker, 'implementing')
             target = json.loads(row["result"]).get("release_target")
             if target:
                 receipt = {**receipt, "release_target": target}
@@ -1315,6 +1330,8 @@ class Store:
                 self.owned(db, actor, ident, body.get("claim_token"), body.get("generation"), body.get("app_binding"))
                 if action != "retry":
                     raise Conflict("Workers may only retry their own stopped attempts")
+            if action == 'complete':
+                task_readiness.guard(self, db, row, row['owner'] or row['last_owner'], 'implementing')
             step = row["step"] + (action == "complete")
             status = "cancelled" if action=="cancel" else "completed" if step==len(json.loads(row["steps"])) else "queued"
             if action == 'pending_external_approval':
@@ -1454,7 +1471,7 @@ class Store:
                 if t["status"]=="queued":
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
-                "capabilities":{"event_dispatch":1,"approval_receipts":1,"approval_question_links":1,"approval_recovery":"verified_decisions_only",
+                "capabilities":{"task_readiness":1,"decision_revisions":1,"event_dispatch":1,"approval_receipts":1,"approval_question_links":1,"approval_recovery":"verified_decisions_only",
                                 "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1,
                                 "attempt_allowance_amendments":1,"completed_attempt_correction":1,
                                 "ios_upload_only_releases":1,"publication_policy":1},
@@ -1470,6 +1487,8 @@ class Store:
                 raise Invalid("Unknown task")
             task=self.public_task(row)
             task.update(self.scheduling(db, row))
+            task['task_readiness'] = task_readiness.view(self, db, row, row['owner'], execution=row['status']=='running')
+            task['task_readiness']['context_sha256'] = task_readiness.context(row)
             task['approval'] = self.approval_state(db,row)
             task["receipts"]=[{**dict(r),"receipt":json.loads(r["receipt"])} for r in db.execute("SELECT * FROM receipts WHERE task_id=? ORDER BY at",(ident,))]
             task["events"]=[dict(r) for r in db.execute("SELECT * FROM events WHERE task_id=? ORDER BY id",(ident,))]

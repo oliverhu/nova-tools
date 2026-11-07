@@ -66,3 +66,5 @@ checks, actual approval boundaries and unrelated schedules.
 The [historical coordination reference](archive/agent-coordination-before-app-only.md)
 is retained only to interpret old receipts. Its chat routing, dispatcher polling
 and CLI-launch instructions must not be used for new work.
+
+See [Task readiness and decision revisions](task-readiness.md) for scoped admission and human-decision fencing.

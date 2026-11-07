@@ -145,6 +145,15 @@ class Handler(BaseHTTPRequestHandler):
                 from . import app_sessions
                 function = app_sessions.post_message if path.endswith('/post') else app_sessions.inbox
                 return self.respond(200, function(store, actor, body))
+            if path == '/api/task-decisions/revise':
+                if actor != 'admin': return self.respond(403, {'error':'Administrator required'})
+                from . import task_readiness
+                return self.respond(200, task_readiness.decision(store, actor, body))
+            readiness_task = re.fullmatch(r'/api/tasks/([0-9a-f]{16})/readiness', path)
+            if readiness_task:
+                if actor != 'admin': return self.respond(403, {'error':'Administrator required'})
+                from . import task_readiness
+                return self.respond(200, task_readiness.update(store, actor, readiness_task[1], body))
             capability_task = re.fullmatch(r'/api/tasks/([0-9a-f]{16})/require-capabilities', path)
             if capability_task:
                 if actor != 'admin':
