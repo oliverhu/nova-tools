@@ -60,6 +60,9 @@ to a worker. Session files and claim files stay private on the local machine.
 - `POST /api/workers/WORKER/app/qualify`: admin supplies `session_id`, `epoch`,
   `policy_revision`, verified `capabilities`, `valid_until` (within 24 hours) and
   `evidence_sha256`. This records permission/capability evidence; it grants none.
+  Optional `task_ids` limits qualification to those exact existing tasks (an
+  empty list admits none). Use this for onboarding pilots so a source-only check
+  cannot accidentally admit unrelated production work with generic capabilities.
 
 Use `nova-coord app-policy --worker WORKER --file /private/policy.json` and
 `app-qualify --worker WORKER --file /private/qualification.json` for the admin
@@ -112,6 +115,15 @@ worker atomically. Source, receipts, dependencies and counters remain. Read back
 the task after any lost response; cancellation is not automatic retry or cleanup.
 New app enrollment and independent readiness precede explicit unpause. Historical
 permission holds are not lifted or transferred into a replacement task.
+
+For a human request to defer work rather than discard it, first record task
+readiness as `waiting`, then reconcile with `action: "park"`, `pause_decision`
+(same human-source fields), and the exact `readiness_revision`. The same settled
+execution, owner/generation/update CAS and resource checks apply. Parking keeps
+the task queued with its acceptance/history intact, fences the old claim, pauses
+the worker, and retains the waiting readiness gate. It cannot become eligible
+merely because the readiness timestamp expires; explicit requalification is
+required when the human resumes that scope.
 
 `nova-coord inbox-post --file /private/handoff.json` calls `/api/inbox/post`.
 The message has a stable 32-hex `request_id`, recipient `coordinator` or an enrolled

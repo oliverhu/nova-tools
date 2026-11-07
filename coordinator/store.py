@@ -1318,15 +1318,18 @@ class Store:
         if body.get("execution_stopped") is not True or body.get("external_state_checked") is not True:
             raise Invalid("Reconciliation requires stopped execution and checked external state")
         action = body.get("action")
-        if action not in ("retry", "complete", "cancel", "pending_external_approval"):
+        if action not in ("retry", "complete", "cancel", "park", "pending_external_approval"):
             raise Invalid("Invalid reconciliation action")
         with self.transaction() as db:
             self.expire(db)
             row = db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone()
             queued_cancel = row and row['status'] == 'queued' and action == 'cancel' and actor == 'admin'
             running_cancel = row and row['status'] == 'running' and action == 'cancel' and actor == 'admin'
-            if running_cancel:
-                decision = body.get('discard_decision')
+            running_park = row and row['status'] == 'running' and action == 'park' and actor == 'admin'
+            if action == 'park' and not running_park:
+                raise Conflict('Only administrators may park explicitly paused running work')
+            if running_cancel or running_park:
+                decision = body.get('pause_decision' if running_park else 'discard_decision')
                 if decision is None:
                     raise Conflict('Only stopped tasks can be reconciled without an explicit human discard decision')
                 if (not isinstance(decision, dict) or set(decision) != {'thread_id', 'response', 'verified'}
@@ -1337,20 +1340,25 @@ class Store:
                 if (body.get('generation') != row['generation'] or body.get('expected_owner') != row['owner']
                         or body.get('expected_updated') != row['updated']):
                     raise Conflict('Running task changed; reload before explicit cancellation')
+                if running_park:
+                    readiness = db.execute('SELECT * FROM task_readiness WHERE task_id=?', (ident,)).fetchone()
+                    if (not readiness or body.get('readiness_revision') != readiness['revision']
+                            or json.loads(readiness['document'])['state'] != 'waiting'):
+                        raise Conflict('Parking requires the exact current waiting readiness revision')
                 # Cancellation is not a way to erase uncertain native/dispatch work.
                 from .event_dispatch import active as active_dispatch
                 from .resource_scope import active as active_scope
                 if (active_dispatch(db, row['owner']) or active_scope(db, row['owner'])
                         or db.execute('SELECT 1 FROM locks WHERE task_id=?', (ident,)).fetchone()):
                     raise Conflict('Settle or audit-abandon retained dispatch/resource operations first')
-                self.event(db, actor, 'human-discarded-running-task', ident, encoded({
+                self.event(db, actor, 'human-parked-running-task' if running_park else 'human-discarded-running-task', ident, encoded({
                     'decision': decision, 'before': self.public_task(row), 'evidence': evidence,
                     'execution_stopped': True, 'external_state_checked': True,
                     'acceptance_complete': False}))
                 # Fence a legacy worker before releasing its claim. App enrollment
                 # and independent readiness must precede an explicit unpause.
                 db.execute('UPDATE workers SET paused=1 WHERE id=?', (row['owner'],))
-            if not row or (not queued_cancel and not running_cancel and row["status"] not in ("held", "blocked", "failed", "pending_external_approval")):
+            if not row or (not queued_cancel and not running_cancel and not running_park and row["status"] not in ("held", "blocked", "failed", "pending_external_approval")):
                 raise Conflict("Only stopped tasks can be reconciled")
             if queued_cancel and body.get('generation') != row['generation']:
                 raise Conflict('Queued cancellation requires the current generation; reload before cancelling')

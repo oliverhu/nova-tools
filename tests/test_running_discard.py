@@ -70,5 +70,29 @@ class RunningDiscardTests(unittest.TestCase):
         with self.store.transaction() as db:
             self.assertIsNotNone(db.execute('SELECT * FROM locks WHERE task_id=?', (self.task['id'],)).fetchone())
 
+    def test_park_preserves_task_but_requires_waiting_readiness(self):
+        from coordinator import task_readiness
+        body = {**self.body, 'action': 'park', 'pause_decision': self.body['discard_decision'], 'readiness_revision': 1}
+        with self.assertRaises(Conflict): self.cancel(body)
+        detail = self.store.detail(self.task['id'])
+        task_readiness.update(self.store, 'admin', self.task['id'], {
+            'request_id': 'a'*32, 'generation': 1, 'expected_revision': 0,
+            'context_sha256': detail['task_readiness']['context_sha256'], 'worker': self.worker,
+            'state': 'waiting', 'valid_until': self.now+100, 'checks': [
+                {'name': 'human-resume', 'state': 'missing', 'evidence_sha256': 'b'*64}],
+            'decisions': [], 'evidence': 'Human asked to skip this work for now'})
+        with self.assertRaises(Conflict): self.cancel({**body, 'readiness_revision': 0})
+        result = self.cancel(body)
+        self.assertEqual('queued', result['status'])
+        self.assertEqual(0, result['step'])
+        self.assertEqual(1, result['generation'])
+        self.assertIsNone(result['owner'])
+        self.assertFalse(self.store.detail(self.task['id'])['ready'])
+        self.now += 200
+        self.assertFalse(self.store.detail(self.task['id'])['ready'])
+
+    def test_park_is_not_a_worker_retry_or_completion(self):
+        with self.assertRaises(Conflict): self.cancel({**self.body, 'action': 'park'}, actor=self.worker)
+
 
 if __name__ == '__main__': unittest.main()

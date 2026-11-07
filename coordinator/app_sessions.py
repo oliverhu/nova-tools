@@ -145,7 +145,7 @@ def adopt(store, worker, body):
 
 def qualify(store, actor, worker, body):
     need(actor == 'admin', 'Administrator qualification required')
-    need(set(body) == {'session_id', 'epoch', 'policy_revision', 'capabilities', 'valid_until', 'evidence_sha256'}
+    need(set(body) - {'task_ids'} == {'session_id', 'epoch', 'policy_revision', 'capabilities', 'valid_until', 'evidence_sha256'}
          and text(body['session_id']) and type(body['epoch']) is int
          and type(body['policy_revision']) is int and type(body['capabilities']) is list
          and 0 < len(body['capabilities']) <= 64
@@ -154,8 +154,15 @@ def qualify(store, actor, worker, body):
          and type(body['valid_until']) in (int, float) and math.isfinite(body['valid_until'])
          and store.clock() < body['valid_until'] <= store.clock() + 86400
          and hexid(body['evidence_sha256']), 'Exact session, bounded capability qualification and evidence required')
+    if 'task_ids' in body:
+        need(type(body['task_ids']) is list and len(body['task_ids']) <= 50
+             and all(hexid(x, 16) for x in body['task_ids'])
+             and len(set(body['task_ids'])) == len(body['task_ids']), 'Exact bounded pilot task allowlist required')
     with store.transaction() as db:
         no_execution(db, worker)
+        if 'task_ids' in body:
+            need(all(db.execute('SELECT 1 FROM tasks WHERE id=?', (ident,)).fetchone()
+                     for ident in body['task_ids']), 'Unknown qualification task')
         row = db.execute('SELECT * FROM app_worker_sessions WHERE worker=?', (worker,)).fetchone()
         current = policy(db, worker)
         need(row and row['session_id'] == body['session_id'] and row['epoch'] == body['epoch']
@@ -183,6 +190,8 @@ def readiness_reason(store, db, worker, task=None):
         return 'Current app readiness qualification required'
     required = {'development'}
     if task is not None:
+        if 'task_ids' in qualification and task['id'] not in qualification['task_ids']:
+            return 'Task is outside the qualified app pilot scope'
         required.update(json.loads(task['requirements']).get('capabilities', []))
     if not required <= set(qualification['capabilities']):
         return 'App session lacks required qualified capability'

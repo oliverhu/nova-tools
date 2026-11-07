@@ -81,6 +81,24 @@ class AppSessionTests(unittest.TestCase):
         self.qualify(['development', 'gui'])
         self.assertIsNotNone(self.claim(task)['task'])
 
+    def test_pilot_qualification_cannot_claim_unlisted_production_task(self):
+        pilot = self.task('pilot'); other = self.task('production')
+        body = {'session_id': self.binding['session_id'], 'epoch': self.binding['epoch'],
+                'policy_revision': 1, 'capabilities': ['development'], 'valid_until': self.now+100,
+                'evidence_sha256': 'e'*64, 'task_ids': [pilot['id']]}
+        app.qualify(self.store, 'admin', self.worker, body)
+        self.assertFalse(self.store.detail(other['id'])['ready'])
+        self.assertIsNone(self.claim(other)['task'])
+        self.assertEqual(pilot['id'], self.claim(pilot)['task']['id'])
+
+    def test_empty_pilot_scope_and_invalid_task_ids(self):
+        body = {'session_id': self.binding['session_id'], 'epoch': self.binding['epoch'],
+                'policy_revision': 1, 'capabilities': ['development'], 'valid_until': self.now+100,
+                'evidence_sha256': 'e'*64, 'task_ids': []}
+        app.qualify(self.store, 'admin', self.worker, body)
+        self.assertIsNone(self.claim(self.task())['task'])
+        for ids in [['f'*16], ['bad'], ['a'*16, 'a'*16]]:
+            with self.assertRaises(Invalid): app.qualify(self.store, 'admin', self.worker, {**body, 'task_ids': ids})
     def test_expired_readiness_stops_effects_but_permits_truthful_cleanup(self):
         c = self.claim(self.task()); self.now += 101
         with self.assertRaises(Conflict): self.store.heartbeat(self.worker, c['task']['id'], self.outcome(c))
