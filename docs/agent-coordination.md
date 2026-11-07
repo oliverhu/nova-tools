@@ -156,6 +156,13 @@ lock and validators, reads the current API, and reports `settlement_ready` witho
 writing a settlement/state transition or launching work. Missing evidence remains
 an explicit error. When it passes and settlement is already authorized, use the
 same command without `--check-only`; no additional approval relay is introduced.
+For owner-reviewed waits, check-only also returns `settlement_fingerprint`.
+Pass that token with `--expected-fingerprint TOKEN` on the normal settlement
+command. The worker recomputes it under the existing lock from the original local
+admission, current task/generation/history, note, and exact proof bytes/file
+identities. A stale token, later local admission or changed claim/evidence refuses
+the mutation and leaves newer state untouched. Operators can pass the returned
+token directly; it adds no human confirmation or retry loop.
 
 For a failed invocation whose report truthfully lacks top-level stopped flags,
 the normal settle command accepts an explicit `owner_review` object containing
@@ -170,6 +177,17 @@ still refuse settlement. The audit records all reviewed evidence hashes and
 readiness bound, consumed nonce and incomplete acceptance remain unchanged.
 This is local admission bookkeeping, not a resource-release API, current live
 responsibility claim, permission grant, feature pass or replay authorization.
+
+The observed selector-failure profile retains its interpretation inside one
+pinned original review, referenced with just `review_path` and `review_sha256`.
+It truthfully records the two successful/reaped `see` and `window list`
+observations and initial capture span, while requiring no click, receiver or
+post-navigation PNG. The exact manifest, target identity/window, operation
+ledger, selector refusal, source/session/nonce and positive process closure are
+checked; extra intents, HOLDs, images, changed/replaced records and unknown other
+effects refuse settlement. Initial captured pixels are not exported PNG or visual
+feature acceptance. Both this profile and the earlier no-observation failure use
+the same check-only/CAS workflow and retain original unknown/false executor flags.
 
 An ended run that failed locally before its first claim needs distinct evidence:
 an explicit `unclaimed_stopped` worker report with stopped/checked cleanup, no

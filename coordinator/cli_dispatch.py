@@ -219,9 +219,14 @@ def main():
     parser.add_argument('--lock-fd', type=int)
     parser.add_argument('--note-file', type=Path)
     parser.add_argument('--check-only', action='store_true', help='Validate settle evidence without changing local admission or service state')
+    parser.add_argument('--expected-fingerprint', help='Exact fingerprint returned by settlement check-only')
     args = parser.parse_args()
     if args.check_only and args.operation != 'settle':
         parser.error('--check-only is supported only with settle')
+    if args.expected_fingerprint is not None and (args.operation != 'settle' or not re.fullmatch('[0-9a-f]{64}', args.expected_fingerprint)):
+        parser.error('--expected-fingerprint requires settle and an exact SHA-256 fingerprint')
+    if args.check_only and args.expected_fingerprint is not None:
+        parser.error('Check-only produces a fresh fingerprint; expected-fingerprint belongs to the apply command')
     config = json.loads(CONFIG.read_text())
     if socket.gethostname() != config['hostname'] or Client().config['worker'] != config['worker']:
         raise ValueError('Guest/worker identity differs from dispatch binding')
@@ -281,6 +286,8 @@ def main():
             task = Client().request('/api/tasks/'+prior['task'])
             finish_path = prior_finish(ROOT, prior)
             note = json.loads(args.note_file.read_text())
+            if args.expected_fingerprint is not None and note.get('owner_review') is None:
+                raise ValueError('Expected-fingerprint is supported only for owner-reviewed settlement')
             report = wait_receipt = readback = None
             finish = json.loads(finish_path.read_text()) if finish_path else {}
             if task.get('status') == 'queued':
@@ -305,10 +312,20 @@ def main():
             if note.get('owner_review') is not None:
                 if runs[-1]['run_id'] != prior['run_id']:
                     raise ValueError('A later local run prevents owner-reviewed settlement')
+                keys = ('id','generation','step','status','owner','last_owner','requirements','dependencies','result',
+                        'receipts','events','approval','fix_attempts_used','total_fix_attempts','attempts_host',
+                        'attempt_base','reassignment_count','attempt_exception','attempt_allowance')
+                fingerprint = hashlib.sha256(json.dumps({'run': prior, 'task': {k: task.get(k) for k in keys},
+                    'note': note, 'proofs': {str(p): {'sha256': hashlib.sha256(value[0]).hexdigest(), 'identity': value[1]}
+                                          for p, value in cleanup_proof['snapshots'].items()}},
+                    sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                if not args.check_only and args.expected_fingerprint != fingerprint:
+                    raise ValueError('Run check-only and supply its exact expected fingerprint; changed evidence or state must be reviewed')
                 settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback,
                                      operation='owner_reviewed_failed_wait', wait_receipt=wait_receipt,
                                      owner_review=cleanup_proof, check_only=args.check_only)
                 print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
+                                  'settlement_fingerprint': fingerprint,
                                   **({'check_only': True, 'settled_for_other_work': False, 'settlement_ready': True} if args.check_only else {}),
                                   'settlement_outcome': 'failed', 'task_status_unchanged': task['status']}))
                 return

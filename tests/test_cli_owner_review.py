@@ -88,11 +88,12 @@ class OwnerReviewedWaitTests(unittest.TestCase):
             originals={p:p.read_bytes() for p in a.ROOT.rglob('*') if p.is_file()}
             client=Mock();client.config={'worker':worker};client.request.return_value=task
             with patch.object(a,'CONFIG',a.ROOT/'config.json'),patch.object(a,'Client',return_value=client),patch.object(a.socket,'gethostname',return_value='fixture'),patch.object(a,'spawn') as spawn,patch.object(a,'rpc_account') as account:
+                fingerprint = None
                 for check in (True,False):
-                    argv=['nova-cli-worker','settle','--run-id',run['run_id'],'--note-file',str(a.ROOT/'note.json')]+(['--check-only'] if check else [])
+                    argv=['nova-cli-worker','settle','--run-id',run['run_id'],'--note-file',str(a.ROOT/'note.json')]+(['--check-only'] if check else ['--expected-fingerprint', fingerprint])
                     out=io.StringIO()
                     with patch('sys.argv',argv),contextlib.redirect_stdout(out):a.main()
-                    result=json.loads(out.getvalue());self.assertEqual(not check,result['settled_for_other_work'])
+                    result=json.loads(out.getvalue());fingerprint=result['settlement_fingerprint'];self.assertEqual(not check,result['settled_for_other_work'])
                     for p,b in originals.items():
                         if check or p!=rd/'state.json':self.assertEqual(b,p.read_bytes())
                     if check:self.assertFalse((rd/'dispatch-settlement.json').exists())
