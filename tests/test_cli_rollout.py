@@ -8,6 +8,26 @@ rollout = importlib.util.module_from_spec(spec); spec.loader.exec_module(rollout
 
 
 class RolloutTests(unittest.TestCase):
+    def test_event_profile_preserves_unrelated_modules_and_rolls_back_absent_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); source = root/'source'; destination = root/'installed'
+            source.mkdir(); destination.mkdir()
+            for name in rollout.EVENT_FILES: (source/name).write_text('value = 2\n')
+            (destination/'client.py').write_text('value = 1\n')
+            (destination/'cli_owner_review.py').write_text('preserved = True\n')
+            plan = root/'plan'; manifest = rollout.plan(source, destination, plan, 'mini', profile='event-dispatch')
+            self.assertEqual(set(manifest['files']), set(rollout.EVENT_FILES))
+            rollout.apply(plan, 'mini')
+            self.assertEqual((destination/'cli_owner_review.py').read_text(), 'preserved = True\n')
+            rollout.apply(plan, 'mini', True)
+            self.assertFalse((destination/'cli_event_dispatch.py').exists())
+            self.assertEqual((destination/'client.py').read_text(), 'value = 1\n')
+
+    def test_arbitrary_rollout_profile_refuses_before_creating_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with self.assertRaises(ValueError): rollout.plan(root, root, root/'plan', 'mini', profile='arbitrary')
+            self.assertFalse((root/'plan').exists())
     def test_exact_apply_partial_recovery_rollback_and_unknown_refusal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); source = root/'source'; destination = root/'installed'

@@ -16,6 +16,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from coordinator.cli_dispatch import save
 
 FILES = ('cli_results.py', 'cli_messages.py', 'publication_ancestry.py', 'client.py', 'cli_dispatch.py')
+EVENT_FILES = ('cli_event_dispatch.py', 'cli_dispatch.py', 'client.py')
+
+
+def profile_files(profile):
+    if profile == 'results': return FILES
+    if profile == 'event-dispatch': return EVENT_FILES
+    raise ValueError('Unknown fixed rollout profile')
 
 
 def digest(raw):
@@ -31,12 +38,13 @@ def read(path):
     return path.read_bytes()
 
 
-def plan(source, destination, directory, worker):
+def plan(source, destination, directory, worker, profile='results'):
+    selected = profile_files(profile)
     if directory.absolute() != directory.resolve():
         raise ValueError('Canonical rollout directory required')
     directory.mkdir(mode=0o700, parents=False, exist_ok=False)
     files = {}
-    for name in FILES:
+    for name in selected:
         before, after = read(destination/name), read(source/name)
         if after is None: raise ValueError('Missing source module')
         compile(after, str(source/name), 'exec')
@@ -48,19 +56,21 @@ def plan(source, destination, directory, worker):
         files[name] = {'before': digest(before), 'after': digest(after)}
     manifest = {'schema': 1, 'hostname': socket.gethostname(), 'worker': worker,
                 'source': str(source), 'destination': str(destination), 'files': files}
+    if profile != 'results': manifest['profile'] = profile
     save(directory/'manifest.json', manifest)
     return manifest
 
 
 def apply(directory, worker, rollback=False):
     manifest = json.loads(read(directory/'manifest.json'))
+    selected = profile_files(manifest.get('profile', 'results'))
     if (manifest.get('schema') != 1 or manifest.get('hostname') != socket.gethostname()
-            or manifest.get('worker') != worker or set(manifest.get('files', {})) != set(FILES)):
+            or manifest.get('worker') != worker or set(manifest.get('files', {})) != set(selected)):
         raise ValueError('Exact guest/worker/module rollout binding required')
     destination = Path(manifest['destination'])
     before, after = ('after', 'before') if rollback else ('before', 'after')
     payloads = {}
-    for name in FILES:
+    for name in selected:
         expected = manifest['files'][name]
         if digest(read(destination/name)) not in (expected[before], expected[after]):
             raise ValueError('Installed module differs; preserve and inspect before rollout')
@@ -69,7 +79,7 @@ def apply(directory, worker, rollback=False):
         payloads[name] = raw
     # Dependencies first, entry point last. A partial update stays recoverable;
     # its exact affected bytes and hashes are preserved in the plan directory.
-    for name in FILES:
+    for name in selected:
         current = digest(read(destination/name))
         if current == manifest['files'][name][after]:
             continue
@@ -85,11 +95,11 @@ def apply(directory, worker, rollback=False):
             with os.fdopen(fd, 'wb') as stream:
                 stream.write(raw); stream.flush(); os.fsync(stream.fileno())
             os.replace(temporary, target)
-    if any(digest(read(destination/n)) != manifest['files'][n][after] for n in FILES):
+    if any(digest(read(destination/n)) != manifest['files'][n][after] for n in selected):
         raise ValueError('Rollout verification failed')
     receipt = {'schema': 1, 'worker': worker, 'hostname': socket.gethostname(),
                'operation': 'rollback' if rollback else 'apply', 'verified': True,
-               'files': {n: manifest['files'][n][after] for n in FILES},
+               'files': {n: manifest['files'][n][after] for n in selected},
                'services_restarted': False, 'credentials_changed': False}
     save(directory/(receipt['operation']+'-receipt.json'), receipt)
     return receipt
@@ -100,13 +110,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('plan', 'apply', 'rollback'))
     parser.add_argument('--directory', type=Path, required=True)
+    parser.add_argument('--profile', choices=('results', 'event-dispatch'), default='results',
+                        help='Fixed module set for plan; apply/rollback use the pinned manifest')
     args = parser.parse_args()
     config = json.loads((Path.home()/'.config/nova-coordinator/cli-dispatch.json').read_text())
     if config['hostname'] != socket.gethostname(): raise ValueError('Wrong guest')
     if args.operation == 'plan':
         result = plan(Path(__file__).resolve().parents[1]/'coordinator',
                       Path.home()/'.local/share/nova-coordinator/coordinator',
-                      args.directory, config['worker'])
+                      args.directory, config['worker'], profile=args.profile)
     else:
         result = apply(args.directory, config['worker'], args.operation == 'rollback')
     print(json.dumps(result, indent=2))
