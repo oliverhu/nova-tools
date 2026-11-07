@@ -267,7 +267,7 @@ def verify_completion(task, run_dir):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-result', 'reconcile-preclaim', 'reconcile-preclaim-event', '_run',
+    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-result', 'reconcile-preclaim', 'reconcile-preclaim-event', 'recovery-plan', 'recovery-observe', '_run',
                                             'message', 'message-status', 'message-readback'])
     parser.add_argument('--task')
     parser.add_argument('--queued-generation', type=int,
@@ -277,6 +277,9 @@ def main():
     parser.add_argument('--run-id')
     parser.add_argument('--lock-fd', type=int)
     parser.add_argument('--note-file', type=Path)
+    parser.add_argument('--request-sha256', help='Exact recovery request or plan hash for --note-file')
+    parser.add_argument('--review-file', type=Path, help='Exact independently reviewed record-read scope')
+    parser.add_argument('--review-sha256')
     parser.add_argument('--check-only', action='store_true', help='Validate settle evidence without changing local admission or service state')
     parser.add_argument('--expected-fingerprint', help='Exact fingerprint returned by settlement check-only')
     args = parser.parse_args()
@@ -284,14 +287,28 @@ def main():
         parser.error('--event-triggered is supported only for exact-task wake')
     if args.check_only and args.operation not in ('settle', 'reconcile-preclaim-event'):
         parser.error('--check-only is supported only with settle or reconcile-preclaim-event')
-    if args.expected_fingerprint is not None and (args.operation != 'settle' or not re.fullmatch('[0-9a-f]{64}', args.expected_fingerprint)):
-        parser.error('--expected-fingerprint requires settle and an exact SHA-256 fingerprint')
+    if args.expected_fingerprint is not None and (args.operation not in ('settle', 'recovery-observe') or not re.fullmatch('[0-9a-f]{64}', args.expected_fingerprint)):
+        parser.error('--expected-fingerprint requires settle/recovery-observe and an exact SHA-256 fingerprint')
     if args.check_only and args.expected_fingerprint is not None:
         parser.error('Check-only produces a fresh fingerprint; expected-fingerprint belongs to the apply command')
     config = json.loads(CONFIG.read_text())
     if socket.gethostname() != config['hostname'] or Client().config['worker'] != config['worker']:
         raise ValueError('Guest/worker identity differs from dispatch binding')
     ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if args.operation in ('recovery-plan', 'recovery-observe'):
+        from . import cli_recovery
+        if not args.note_file or not args.request_sha256 or not args.run_id:
+            parser.error('Recovery requires exact --run-id, --note-file and --request-sha256')
+        reference = {'path': str(args.note_file), 'sha256': args.request_sha256}
+        if args.operation == 'recovery-plan':
+            result = cli_recovery.plan(ROOT, config['worker'], args.run_id, reference, Client())
+        else:
+            if not args.review_file or not args.review_sha256 or not args.expected_fingerprint:
+                parser.error('Recovery observation requires exact review and plan fingerprint')
+            result = cli_recovery.observe(ROOT, config['worker'], args.run_id, reference,
+                {'path': str(args.review_file), 'sha256': args.review_sha256}, args.expected_fingerprint, Client())
+        print(json.dumps(result))
+        return  # Never message-closeout, reconcile state, report available or ACK.
     if args.operation in ('message', 'message-status', 'message-readback'):
         from . import cli_messages
         client = Client()

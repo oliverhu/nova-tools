@@ -606,3 +606,10 @@ A plan/installed-hash receipt establishes installed bytes, not runtime acceptanc
 Run the contract suite through the actual guest shell and record the actual saved
 account, private configuration preservation and current-supervisor continuity.
 No service, schedule, skill, credential or admission setting changes are included.
+
+
+Scoped retained-metadata evidence collection has a separate
+[`recovery-plan` / `recovery-observe` contract](scoped-readonly-recovery.md).
+It cannot change normal admission, typed results, availability or wake ACK.
+Its source qualification and plans authorize no held-guest access or native
+probe; unknown resource and actual approval/operation holds remain binding.

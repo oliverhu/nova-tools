@@ -18,9 +18,11 @@ from coordinator.cli_dispatch import save
 FILES = ('cli_results.py', 'cli_messages.py', 'publication_ancestry.py', 'client.py', 'cli_dispatch.py')
 EVENT_FILES = ('cli_event_dispatch.py', 'cli_dispatch.py', 'client.py')
 EVENT_FILES_V2 = ('cli_results.py', *EVENT_FILES)
+RECOVERY_FILES_V1 = ('cli_recovery.py', 'cli_results.py', 'cli_dispatch.py', 'client.py')
 
 
 def profile_files(profile):
+    if profile == 'scoped-recovery-v1': return RECOVERY_FILES_V1
     if profile == 'results': return FILES
     if profile == 'event-dispatch': return EVENT_FILES
     if profile == 'event-dispatch-v2': return EVENT_FILES_V2
@@ -112,7 +114,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('plan', 'apply', 'rollback'))
     parser.add_argument('--directory', type=Path, required=True)
-    parser.add_argument('--profile', choices=('results', 'event-dispatch', 'event-dispatch-v2'), default='results',
+    parser.add_argument('--profile', choices=('results', 'event-dispatch', 'event-dispatch-v2', 'scoped-recovery-v1'), default='results',
                         help='Fixed module set for plan; apply/rollback use the pinned manifest')
     args = parser.parse_args()
     config = json.loads((Path.home()/'.config/nova-coordinator/cli-dispatch.json').read_text())

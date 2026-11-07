@@ -34,6 +34,22 @@ class RolloutTests(unittest.TestCase):
             self.assertFalse((destination/'cli_event_dispatch.py').exists())
             self.assertEqual((destination/'client.py').read_text(), 'value = 1\n')
 
+    def test_recovery_profile_installs_exact_dependency_and_rolls_back_without_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); source = root/'source'; installed = root/'installed'
+            source.mkdir(); installed.mkdir()
+            for name in rollout.RECOVERY_FILES_V1: (source/name).write_text('value = 2\n')
+            (installed/'cli_dispatch.py').write_text('value = 1\n')
+            run = installed/'state.json'; run.write_bytes(b'preserve held run')
+            plan = root/'plan'; manifest = rollout.plan(source, installed, plan, 'mini', profile='scoped-recovery-v1')
+            self.assertEqual(set(manifest['files']), set(rollout.RECOVERY_FILES_V1))
+            rollout.apply(plan, 'mini'); self.assertTrue((installed/'cli_recovery.py').is_file())
+            self.assertEqual(run.read_bytes(), b'preserve held run')
+            rollout.apply(plan, 'mini', True)
+            self.assertFalse((installed/'cli_recovery.py').exists())
+            self.assertEqual((installed/'cli_dispatch.py').read_text(), 'value = 1\n')
+            self.assertEqual(run.read_bytes(), b'preserve held run')
+
     def test_arbitrary_rollout_profile_refuses_before_creating_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
