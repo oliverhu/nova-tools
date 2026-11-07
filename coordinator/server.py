@@ -99,6 +99,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(403,{"error":"Cross-origin requests are not allowed"})
         store=self.server.store
         if self.command=="GET":
+            if path == '/api/worker/resource-scope/policy':
+                from .workers import MINI_VM_WORKERS
+                if actor not in MINI_VM_WORKERS:
+                    return self.respond(403, {'error':'Exact Mini worker required'})
+                with store.connection() as db:
+                    row=db.execute('SELECT * FROM resource_scope_policies WHERE worker=?',(actor,)).fetchone()
+                    if not row or not row['enabled']: raise Conflict('Resource scope is not enabled')
+                    return self.respond(200, {'worker':actor,'revision':row['revision'],'policy':json.loads(row['document'])})
             link = re.fullmatch(r"/api/approval-links/([0-9a-f]{64})", path)
             if link:
                 if actor != "admin":
@@ -123,6 +131,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(403, {'error': 'Capability refinement requires administrator identity'})
                 from . import event_dispatch
                 return self.respond(200, event_dispatch.require_capabilities(store, actor, capability_task[1], body))
+            scoped_config = re.fullmatch(r'/api/workers/([a-z0-9-]+)/resource-scope', path)
+            if scoped_config:
+                if actor != 'admin': return self.respond(403, {'error':'Resource policy requires administrator'})
+                from . import resource_scope
+                return self.respond(200, resource_scope.configure(store, actor, scoped_config[1], body))
+            if path in ('/api/worker/resource-scope/reserve', '/api/worker/resource-scope/complete'):
+                from .workers import MINI_VM_WORKERS
+                if actor not in MINI_VM_WORKERS: return self.respond(403, {'error':'Exact Mini worker required'})
+                from . import resource_scope
+                operation = path.rsplit('/', 1)[-1]
+                return self.respond(200, getattr(resource_scope, operation)(store, actor, body))
             dispatch_config = re.fullmatch(r'/api/workers/([a-z0-9-]+)/dispatch', path)
             if dispatch_config:
                 if actor != 'admin':

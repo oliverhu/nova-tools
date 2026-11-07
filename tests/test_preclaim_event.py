@@ -78,6 +78,20 @@ class PreclaimTests(unittest.TestCase):
             report.update(queued_generation=0, claim_attempted=False, service_receipt_submitted=False,
                 test_started=False, publication=False, execution_stopped=True, external_state_checked=True)
             save(directory/'stopped-cleanup.json', cleanup); save(directory/'readiness-check.json', {'claim_attempted': False})
+        elif profile == 'stopped-readiness-refusal':
+            report.update(outcome='blocked', queued_generation=0, claim_attempted=False, finish_attempted=False,
+                          fix_attempts_used=0)
+            save(directory/'stopped-cleanup.json', cleanup)
+            save(directory/'readiness-preflight.json', {'task': self.task['id'], 'generation': 0,
+                'task_status': 'queued', 'prior_receipts': [], 'claim_attempted': False, 'claim_generation': None,
+                'readiness_manifest': self.config['event_dispatch']['readiness_manifest'],
+                'readiness_manifest_sha256': self.revision, 'messages_ledger_exists': False, 'message_count': 0})
+            save(directory/'actor-binding.json', {'run_id': self.run_id, 'task': self.task['id'],
+                'queued_generation': 0, 'claimed_generation': None, 'claim_attempted': False,
+                **{k:self.config[k] for k in ('worker', 'account_email_sha256', 'model', 'reasoning')},
+                'thread_ids': ['receiver-thread'], 'execution_thread_id': 'receiver-thread'})
+            save(directory/'instruction-readback.json', {'schema': 1, 'run_id': self.run_id,
+                'worker': self.worker, 'hostname': self.config['hostname'], 'own_actor_adoption': True})
         else:
             report.pop('summary')  # The actual noninvocation report records its reason in the marker.
             report.update(claimed=False, service_status='queued')
@@ -88,6 +102,7 @@ class PreclaimTests(unittest.TestCase):
         for n,v in {'state.json':state, 'worker-report.json':report, 'task-readback.json':self.old,
             'tool-discovery.json': {'tools': []}, 'wake-reservation-response.json': {'wake_id':self.run_id,'status':'reserved','duplicate':False},
             'model-spawn-intent.json': {'wake_id':self.run_id,'run_id':self.run_id}, 'wake-authorization.json': self.binding}.items(): save(directory/n,v)
+        if profile == 'stopped-readiness-refusal': (directory/'tool-discovery.json').unlink()
         (directory/'events.jsonl').write_text('{"type":"thread.started","thread_id":"fixture"}\n')
         (directory/'events.jsonl').chmod(0o600)
         disposition = self.refine()
@@ -158,8 +173,70 @@ class PreclaimTests(unittest.TestCase):
         self.assertEqual(original,(directory/'finish-response.json').read_bytes())
         self.assertEqual(self.store.detail(self.task['id'])['receipts'],[])
 
+    def test_stopped_readiness_refusal_retains_blocked_report_and_no_claim_or_finish(self):
+        self.refinement['capabilities'] = ['cli-media-v1-installed']
+        directory,state,note=self.fixture('stopped-readiness-refusal')
+        originals={n:(directory/n).read_bytes() for n in local.PRECLAIM_PROFILES['stopped-readiness-refusal']}
+        self.assertTrue(self.apply(state,note,True)['validated'])
+        self.assertTrue(self.apply(state,note)['settled'])
+        self.assertEqual(json.loads(originals['worker-report.json'])['outcome'], 'blocked')
+        for n,raw in originals.items():
+            self.assertEqual(raw,(directory/('preclaim-state-before.json' if n=='state.json' else n)).read_bytes())
+        for n in ('finish-response.json','run-result.json','claim-response.json','tool-discovery.json'):
+            self.assertFalse((directory/n).exists())
+        current=self.store.detail(self.task['id'])
+        self.assertEqual((current['status'], current['generation'], current['receipts']), ('queued',0,[]))
+        self.assertIsNone(server.next_candidate(self.store,self.worker)['task_id'])
+        self.assertIsNone(self.store.claim(self.worker,self.task['id'],self.binding)['task'])
+        self.store.pulse(self.worker, {'capacity': {'capabilities': ['cli-shell','cli-media-v1-installed']}})
+        self.assertEqual(server.next_candidate(self.store,self.worker)['task_id'],self.task['id'])
+        binding={**self.binding, 'run_id': 'e'*32, 'wake_id': 'e'*32}
+        server.reserve(self.store,self.worker,{**{k:v for k,v in binding.items() if k!='token'},
+            'task_id':self.task['id'],'queued_generation':0,'readiness_revision':self.revision,
+            'token_hash':local.digest(binding['token'].encode())})
+        self.assertEqual(self.store.claim(self.worker,self.task['id'],binding)['task']['generation'],1)
+
+    def test_readiness_refusal_rejects_changed_actor_readiness_holds_and_claim(self):
+        directory,state,note_path=self.fixture('stopped-readiness-refusal')
+        originals={n:(directory/n).read_bytes() for n in local.PRECLAIM_PROFILES['stopped-readiness-refusal']}
+        note=json.loads(note_path.read_bytes())
+        changes=[('worker-report.json','claim_attempted',True),('worker-report.json','finish_attempted',True),
+                 ('worker-report.json','outcome','completed'),('worker-report.json','human_stop',True),
+                 ('stopped-cleanup.json','unknown_operations',['input']),
+                 ('readiness-preflight.json','claim_generation',1),
+                 ('readiness-preflight.json','readiness_manifest_sha256','f'*64),
+                 ('readiness-preflight.json','message_count',1),('actor-binding.json','model','other'),
+                 ('actor-binding.json','account_email_sha256','f'*64),('actor-binding.json','thread_ids',['other']),
+                 ('instruction-readback.json','own_actor_adoption',False)]
+        for filename,key,value in changes:
+            with self.subTest(filename=filename,key=key):
+                document=json.loads(originals[filename]);document[key]=value;save(directory/filename,document)
+                altered=copy.deepcopy(note);altered['evidence_sha256'][filename]=local.digest((directory/filename).read_bytes())
+                save(note_path,altered)
+                with self.assertRaises(ValueError):self.apply(state,note_path)
+                self.assertFalse((directory/'preclaim-state-before.json').exists())
+                (directory/filename).write_bytes(originals[filename])
+        save(note_path,note)
+        save(directory/'claim-response.json', {'task': 'actually-claimed'})
+        with self.assertRaises(ValueError):self.apply(state,note_path)
+
+    def test_final_service_race_does_not_mutate_local_originals(self):
+        directory,state,note=self.fixture('stopped-readiness-refusal')
+        calls=0
+        def racing(route,body=None):
+            nonlocal calls
+            result=self.request(route,body)
+            if route.startswith('/api/tasks/'):
+                calls+=1
+                if calls==2:result['events'].append({'kind':'unexpected','actor':'admin'})
+            return result
+        self.client.request.side_effect=racing
+        with self.assertRaises(ValueError):self.apply(state,note)
+        self.assertFalse((directory/'preclaim-state-before.json').exists())
+        self.assertEqual(json.loads((directory/'state.json').read_bytes()),state)
+
     def test_actual_authenticated_http_refinement_and_preclaim_ack(self):
-        directory,state,note=self.fixture()
+        directory,state,note=self.fixture('stopped-readiness-refusal')
         tokens={'admin':'a'*40,self.worker:'b'*40}
         service=Server(('127.0.0.1',0),self.store,tokens,Path(__file__).resolve().parents[1]/'web')
         thread=threading.Thread(target=service.serve_forever,daemon=True);thread.start()

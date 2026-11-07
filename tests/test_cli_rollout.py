@@ -65,6 +65,21 @@ class RolloutTests(unittest.TestCase):
             self.assertFalse((installed/'cli_media.py').exists())
             self.assertEqual((installed/'cli_messages.py').read_text(),'value = 1\n')
 
+    def test_resource_scope_profile_preserves_old_wake_and_unrelated_media_modules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();source=root/'source';installed=root/'installed'
+            source.mkdir();installed.mkdir()
+            for name in rollout.RESOURCE_SCOPE_FILES_V1:(source/name).write_text('value = 2\n')
+            (installed/'cli_dispatch.py').write_text('value = 1\n')
+            (installed/'cli_messages.py').write_text('media = "preserved"\n')
+            (installed/'state.json').write_bytes(b'old held wake, immutable unknown inventory')
+            plan=root/'plan';rollout.plan(source,installed,plan,'mini',profile='resource-scope-v1')
+            rollout.apply(plan,'mini');self.assertTrue((installed/'resource_scope.py').exists())
+            self.assertEqual((installed/'cli_messages.py').read_text(),'media = "preserved"\n')
+            rollout.apply(plan,'mini',True);self.assertFalse((installed/'resource_scope.py').exists())
+            self.assertEqual((installed/'cli_dispatch.py').read_text(),'value = 1\n')
+            self.assertEqual((installed/'state.json').read_bytes(),b'old held wake, immutable unknown inventory')
+
     def test_arbitrary_rollout_profile_refuses_before_creating_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

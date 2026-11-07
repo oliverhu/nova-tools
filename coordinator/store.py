@@ -136,6 +136,8 @@ class Store:
             db.executescript(approval_links.SCHEMA)
             from . import event_dispatch
             db.executescript(event_dispatch.SCHEMA)
+            from . import resource_scope
+            db.executescript(resource_scope.SCHEMA)
             columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
             if "last_owner" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN last_owner TEXT")
@@ -287,8 +289,10 @@ class Store:
         if type(priority) is not int or not 0 <= priority <= 100:
             raise Invalid("priority must be 0–100")
         requirements = body.get("requirements", {})
-        if not isinstance(requirements, dict) or set(requirements) - {"memory_gb", "disk_gb", "cpus", "capabilities", "worker"}:
+        if not isinstance(requirements, dict) or set(requirements) - {"memory_gb", "disk_gb", "cpus", "capabilities", "worker", "resource_scope"}:
             raise Invalid("Invalid requirements")
+        if "resource_scope" in requirements and not isinstance(requirements["resource_scope"], dict):
+            raise Invalid("Invalid resource scope declaration")
         for field in ("memory_gb", "disk_gb", "cpus"):
             if field in requirements and (type(requirements[field]) not in (int, float) or not 0 <= requirements[field] <= 100000):
                 raise Invalid("Resource requirements must be nonnegative numbers")
@@ -615,7 +619,7 @@ class Store:
             for row in rows:
                 if task_id and row["id"] != task_id:
                     continue
-                if not event_dispatch.claim_allowed(db, row, worker, dispatch_binding):
+                if not event_dispatch.claim_allowed(db, row, worker, dispatch_binding, store=self):
                     continue
                 if publication_policy.admission(self, db, row):
                     continue
@@ -664,6 +668,8 @@ class Store:
                            (worker,hashlib.sha256(token.encode()).hexdigest(),generation,now+self.lease_seconds,now,row["id"]))
                 db.execute("UPDATE workers SET last_claim=? WHERE id=?", (now,worker))
                 event_dispatch.claimed(self, db, row, worker, generation)
+                from . import resource_scope
+                resource_scope.claimed(self, db, row, worker, generation)
                 self.event(db, worker, "claimed", row["id"], f"Step {row['step']+1}; generation {generation}; resources {resources}")
                 task = self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (row["id"],)).fetchone())
                 return {"task": task, "claim_token": token, "resources": resources, "heartbeat_seconds": 30}
@@ -1422,6 +1428,9 @@ class Store:
                 dispatch = projection(self, db, row['id'])
                 if dispatch is not None:
                     w['event_dispatch'] = dispatch
+                from .resource_scope import projection as scoped_projection
+                scoped = scoped_projection(self, db, w['id'])
+                if scoped is not None: w['resource_scope'] = scoped
             tasks=[self.public_task(r) for r in db.execute("SELECT * FROM tasks ORDER BY created DESC LIMIT 500")]
             for t in tasks:
                 row = db.execute("SELECT * FROM tasks WHERE id=?",(t['id'],)).fetchone()

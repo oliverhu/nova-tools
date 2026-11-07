@@ -692,3 +692,34 @@ credentials or held runs change. Both Minis require their own actual rollout
 and readback. A held guest stays held; local tests or one guest's result cannot
 complete cross-machine acceptance. Keep incomplete work on its task branch until
 required actual acceptance and normal audited main integration are complete.
+
+### Resource-scoped eligibility
+
+An optional, separate source/inert/media lane can admit an exact disjoint task
+while a normal Mini wake remains held. See [resource-scoped eligibility](resource-scoped-eligibility.md)
+for the evidence contract and controlled rollout. It never advertises generic
+availability, clears a native/approval hold, ACKs the original wake, or grants OS
+permissions. Source integration alone does not enable it.
+
+### Stopped preclaim readiness refusal
+
+A receiver that stops before any claim because its required client support is
+absent may retain a truthful `blocked` local report. The
+`stopped-readiness-refusal` evidence profile accepts that original report,
+`stopped-cleanup.json`, `readiness-preflight.json`, exact actor/instruction
+readbacks and original reservation/state/event evidence. It never fabricates a
+finish response, claim, tool discovery or passing result. Normal positive lock
+release, unchanged pinned installed source, exact never-owned generation-zero
+history and one genuine audited capability refinement remain required. Unknown
+operations, actual human stops, unread messages, changed actor/readiness or an
+actual claim refuse settlement. Recheck the fresh service task and all original
+bytes before writing the settlement journal; ambiguous delivery reuses that
+journal and its original wake authorization.
+
+For media receivers, require `cli-media-v1-installed` through the existing audited
+additive requirements API before enabling pickup. Both normal event selection and
+fallback claims use that same requirement. Advertise it only after the fixed
+`media-v1` module set, tool pins, unchanged actor/account and updated readiness
+manifest have been installed and verified at an actual idle boundary. Pausing a
+worker does not settle its existing reservation. Qualify stopped preclaim evidence
+from isolated source before changing any installed file pinned by that wake.

@@ -22,7 +22,9 @@ from .cli_results import read_original
 PRECLAIM_COMMON = {'state.json', 'worker-report.json', 'task-readback.json', 'tool-discovery.json',
                    'wake-reservation-response.json', 'model-spawn-intent.json', 'events.jsonl'}
 PRECLAIM_PROFILES = {'explicit-cleanup': PRECLAIM_COMMON | {'stopped-cleanup.json', 'readiness-check.json'},
-                     'noninvocation-marker': PRECLAIM_COMMON | {'finish-response.json', 'readiness.json'}}
+                     'noninvocation-marker': PRECLAIM_COMMON | {'finish-response.json', 'readiness.json'},
+                     'stopped-readiness-refusal': (PRECLAIM_COMMON - {'tool-discovery.json'}) |
+                         {'stopped-cleanup.json', 'readiness-preflight.json', 'actor-binding.json', 'instruction-readback.json'}}
 
 
 def digest(raw):
@@ -181,7 +183,7 @@ def validate_preclaim_event(config, prior, documents, task, note):
     """
     report, old = (documents[n] for n in ('worker-report.json', 'task-readback.json'))
     profile = note['evidence_profile']
-    cleanup = documents['stopped-cleanup.json'] if profile == 'explicit-cleanup' else report.get('cleanup', {})
+    cleanup = documents['stopped-cleanup.json'] if profile in ('explicit-cleanup', 'stopped-readiness-refusal') else report.get('cleanup', {})
     run_id, worker = prior.get('run_id'), config['worker']
     if (not isinstance(run_id, str) or len(run_id) != 32 or any(c not in '0123456789abcdef' for c in run_id)
             or prior.get('worker') != worker or prior.get('task') != task.get('id')
@@ -222,7 +224,8 @@ def validate_preclaim_event(config, prior, documents, task, note):
         raise ValueError('Reservation or capability disposition does not bind the original task')
     if (report.get('run_id') != run_id or report.get('task') != task['id'] or report.get('worker') != worker
             or type(report.get('generation')) is not int or report['generation'] != 0
-            or report.get('outcome') != 'waiting' or report.get('acceptance_complete') is not False
+            or report.get('outcome') != ('blocked' if profile == 'stopped-readiness-refusal' else 'waiting')
+            or report.get('acceptance_complete') is not False
             or report.get('cleanup') != cleanup
             or not isinstance(cleanup.get('evidence'), list) or not cleanup['evidence']
             or not all(isinstance(e, str) and e.strip() for e in cleanup['evidence'])):
@@ -234,6 +237,25 @@ def validate_preclaim_event(config, prior, documents, task, note):
                 or report.get('test_started') is not False or report.get('publication') is not False
                 or report.get('execution_stopped') is not True or report.get('external_state_checked') is not True):
             raise ValueError('Explicit-cleanup report lacks positive no-claim/no-receipt facts')
+    elif profile == 'stopped-readiness-refusal':
+        ready = documents['readiness-preflight.json']; actor = documents['actor-binding.json']
+        instructions = documents['instruction-readback.json']
+        if (report.get('claim_attempted') is not False or report.get('finish_attempted') is not False
+                or report.get('queued_generation') != 0 or report.get('fix_attempts_used') != 0
+                or not isinstance(report.get('summary'), str) or not report['summary'].strip()
+                or any(ready.get(k) != v for k, v in {'task': task['id'], 'generation': 0,
+                    'task_status': 'queued', 'prior_receipts': [], 'claim_attempted': False,
+                    'claim_generation': None, 'messages_ledger_exists': False, 'message_count': 0}.items())
+                or ready.get('readiness_manifest_sha256') != config['event_dispatch']['readiness_revision']
+                or ready.get('readiness_manifest') != config['event_dispatch']['readiness_manifest']
+                or any(actor.get(k) != v for k, v in {'run_id': run_id, 'task': task['id'],
+                    'queued_generation': 0, 'claimed_generation': None, 'claim_attempted': False}.items())
+                or any(actor.get(k) != config.get(k) for k in ('worker', 'account_email_sha256', 'model', 'reasoning'))
+                or actor.get('thread_ids') != [actor.get('execution_thread_id')]
+                or not isinstance(actor.get('execution_thread_id'), str) or not actor['execution_thread_id'].strip()
+                or any(instructions.get(k) != v for k, v in {'schema': 1, 'run_id': run_id,
+                    'worker': worker, 'hostname': config['hostname'], 'own_actor_adoption': True}.items())):
+            raise ValueError('Original stopped preclaim refusal, readiness and exact actor binding required')
     else:
         marker = documents['finish-response.json']; ready = documents['readiness.json']
         if (report.get('claimed') is not False or report.get('service_status') != 'queued'
@@ -321,10 +343,14 @@ def reconcile_preclaim_event(client, config, root, prior, note_file, lock, check
             entries = json.loads(read_original(messages)[0]).get('messages')
             if not isinstance(entries, list) or any(m.get('status') != 'readback' for m in entries):
                 raise ValueError('Unreceived messages prevent preclaim settlement')
+        fresh = client.request('/api/tasks/'+prior['task'])
+        validate_preclaim_event(config, prior, documents, fresh, note)
+        if any(fresh.get(k) != task.get(k) for k in ('requirements', 'events', 'generation', 'owner', 'status', 'receipts')):
+            raise ValueError('Service task changed during preclaim validation')
+        if read_original(note_file)[0] != note_raw or any(read_original(directory/n)[0] != value for n, value in raw.items()):
+            raise ValueError('Original preclaim evidence changed during validation')
         if check_only:
             return {'validated': True, 'run_id': prior['run_id'], 'service_or_admission_changed': False}
-        if any(read_original(directory/n)[0] != value for n, value in raw.items()):
-            raise ValueError('Original preclaim evidence changed during validation')
         # Originals remain byte-exact. No finish or passing result is invented.
         fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, 'wb') as stream:
