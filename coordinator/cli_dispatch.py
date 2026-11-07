@@ -218,7 +218,10 @@ def main():
     parser.add_argument('--run-id')
     parser.add_argument('--lock-fd', type=int)
     parser.add_argument('--note-file', type=Path)
+    parser.add_argument('--check-only', action='store_true', help='Validate settle evidence without changing local admission or service state')
     args = parser.parse_args()
+    if args.check_only and args.operation != 'settle':
+        parser.error('--check-only is supported only with settle')
     config = json.loads(CONFIG.read_text())
     if socket.gethostname() != config['hostname'] or Client().config['worker'] != config['worker']:
         raise ValueError('Guest/worker identity differs from dispatch binding')
@@ -293,28 +296,44 @@ def main():
                 proof = json.loads(proof_path.read_text())
                 if unclaimed or approved: readback = proof
                 else: wait_receipt = proof
-                if not unclaimed and not approved and task.get('dependencies') != finish.get('dependencies'):
+                if not unclaimed and not approved and (task.get('dependencies') != finish.get('dependencies') or note.get('owner_review') is not None):
                     path = run_dir/'task-readback.json'
                     if not path.is_file() or path.resolve() != path:
                         raise ValueError('Original canonical wait readback required')
                     readback = json.loads(path.read_text())
             cleanup_proof = validate_settlement(prior, task, finish, note, config['worker'], report, wait_receipt, readback)
+            if note.get('owner_review') is not None:
+                if runs[-1]['run_id'] != prior['run_id']:
+                    raise ValueError('A later local run prevents owner-reviewed settlement')
+                settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback,
+                                     operation='owner_reviewed_failed_wait', wait_receipt=wait_receipt,
+                                     owner_review=cleanup_proof, check_only=args.check_only)
+                print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
+                                  **({'check_only': True, 'settled_for_other_work': False, 'settlement_ready': True} if args.check_only else {}),
+                                  'settlement_outcome': 'failed', 'task_status_unchanged': task['status']}))
+                return
             if wait_receipt is not None and task.get('dependencies') != finish.get('dependencies'):
                 if runs[-1]['run_id'] != prior['run_id']:
                     raise ValueError('Later local run prevents historical settlement')
                 settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback,
-                                     operation='audited_wait', wait_receipt=wait_receipt)
+                                     operation='audited_wait', wait_receipt=wait_receipt, check_only=args.check_only)
                 print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
+                                  **({'check_only': True, 'settled_for_other_work': False, 'settlement_ready': True} if args.check_only else {}),
                                   'task_status_unchanged': task['status']}))
                 return
             if task.get('status') == 'queued' and finish.get('status') == 'pending_external_approval':
                 if runs[-1]['run_id'] != prior['run_id']:
                     raise ValueError('A later local run exists; do not settle historical approval work')
-                settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback, cleanup_proof=cleanup_proof)
+                settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback, cleanup_proof=cleanup_proof, check_only=args.check_only)
                 print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
+                                  **({'check_only': True, 'settled_for_other_work': False, 'settlement_ready': True} if args.check_only else {}),
                                   'task_status_unchanged': task['status']}))
                 return
             # Audit local admission only. Never finish/reassign/retry a service task.
+            if args.check_only:
+                print(json.dumps({'run_id': prior['run_id'], 'check_only': True, 'settlement_ready': True,
+                                  'settled_for_other_work': False, 'task_status_unchanged': task['status']}))
+                return
             save(ROOT/prior['run_id']/'dispatch-settlement.json', {**note, 'recorded_at': time.time()})
             save(ROOT/prior['run_id']/'state.json', {**prior, 'prior_status': prior['status'], 'status': 'settled'})
             print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
@@ -442,7 +461,14 @@ def prior_finish(root, record):
 
 def validate_settlement(run, task, finish, note, worker, report=None, wait_receipt=None, readback=None):
     cleanup_proof = None
-    if task.get('status') == 'queued':
+    if note.get('owner_review') is not None:
+        if task.get('status') != 'queued' or finish.get('status') != 'queued':
+            raise ValueError('Owner-reviewed settlement requires the original owning queued wait')
+        from .cli_owner_review import validate
+        cleanup_proof = validate(ROOT, run, task, report, note, readback, read_cleanup_proof)
+        validate_queued_wait(run, task, finish, report, wait_receipt, worker,
+                             owner_closure=cleanup_proof['closure'])
+    elif task.get('status') == 'queued':
         if finish.get('finish_invoked') is False:
             validate_unclaimed_stop(run, task, finish, report, readback, worker)
         elif finish.get('status') == 'pending_external_approval':
@@ -609,13 +635,13 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
     return cleanup_proof
 
 
-def settle_approved_wait(run_dir, prior, note, finish, report, readback, operation='approved_wait', wait_receipt=None, cleanup_proof=None):
+def settle_approved_wait(run_dir, prior, note, finish, report, readback, operation='approved_wait', wait_receipt=None, cleanup_proof=None, owner_review=None, check_only=False):
     """Called under worker.lock; keep byte-exact originals and append a local audit."""
     paths = [run_dir/n for n in ('state.json', 'finish-response.json', 'worker-report.json', 'task-readback.json')]
     backup = run_dir/(operation.replace('_', '-')+'-state-before.json'); audit = run_dir/'dispatch-settlement.json'
     values = [prior, finish, report, readback]
     forbidden = []
-    if operation == 'audited_wait':
+    if operation in ('audited_wait', 'owner_reviewed_failed_wait'):
         paths.append(run_dir/'wait-receipt.json'); values.append(wait_receipt)
     else:
         forbidden.append(run_dir/'wait-receipt.json')
@@ -630,8 +656,18 @@ def settle_approved_wait(run_dir, prior, note, finish, report, readback, operati
         if path != run_dir/'stopped-cleanup.json' or read_cleanup_proof(path) != (raw, identity):
             raise ValueError('Cleanup proof changed or was replaced after validation')
         originals[path] = raw
+    if owner_review is not None:
+        if operation != 'owner_reviewed_failed_wait' or any(read_cleanup_proof(p) != value for p, value in owner_review['snapshots'].items()):
+            raise ValueError('Owner-reviewed evidence changed before settlement')
+    if check_only:
+        return
     record = {**note, 'operation': operation, 'recorded_at': time.time(), 'prior_state': prior,
               'original_evidence_sha256': {p.name: hashlib.sha256(raw).hexdigest() for p, raw in originals.items()}}
+    if owner_review is not None:
+        record.update(settlement_outcome='failed', acceptance_complete=False,
+                      executor_fields_preserved=owner_review['flags_preserved'],
+                      owner_review_evidence_sha256={str(p): hashlib.sha256(value[0]).hexdigest()
+                                                   for p, value in owner_review['snapshots'].items()})
     for path, raw in ((backup, originals[paths[0]]), (audit, json.dumps(record, indent=2).encode())):
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, 'wb') as stream:
@@ -640,7 +676,10 @@ def settle_approved_wait(run_dir, prior, note, finish, report, readback, operati
         raise ValueError('Original approval evidence changed during settlement; reconcile audit before retry')
     if cleanup_proof is not None and read_cleanup_proof(cleanup_proof[0]) != cleanup_proof[1:]:
         raise ValueError('Cleanup proof replaced during settlement; reconcile audit before retry')
-    save(paths[0], {**prior, 'prior_status': prior['status'], 'status': 'settled'})
+    if owner_review is not None and any(read_cleanup_proof(p) != value for p, value in owner_review['snapshots'].items()):
+        raise ValueError('Owner-reviewed evidence changed during settlement; reconcile audit before retry')
+    save(paths[0], {**prior, 'prior_status': prior['status'], 'status': 'settled',
+                   **({'settlement_outcome': 'failed'} if owner_review is not None else {})})
 
 
 def validate_preclaim_readiness_stop(run, task, report, readback, note, worker):
@@ -812,7 +851,7 @@ def validate_audited_wait(run, task, response, report, wait_receipt, readback, n
         raise ValueError('Exact authenticated admin waiting disposition required')
 
 
-def validate_queued_wait(run, task, response, report, wait_receipt, worker):
+def validate_queued_wait(run, task, response, report, wait_receipt, worker, owner_closure=None):
     """A real owning defer is unowned and keeps stop evidence outside result."""
     if (run.get('task') != task.get('id') or run.get('worker') != worker
             or run.get('status') != 'needs_attention' or type(run.get('cli_exit_code')) is not int
@@ -834,7 +873,9 @@ def validate_queued_wait(run, task, response, report, wait_receipt, worker):
                    for value in (report, wait_receipt))
             or report.get('outcome') not in ('queued', 'waiting', 'queued_wait')
             or ('outcome' in wait_receipt and wait_receipt['outcome'] not in ('queued', 'waiting', 'queued_wait'))
-            or (report.get('execution_stopped') is not True and cleanup.get('execution_stopped') is not True)
+            or (report.get('execution_stopped') is not True and cleanup.get('execution_stopped') is not True
+                and (not isinstance(owner_closure, dict) or owner_closure.get('execution_stopped') is not True
+                     or owner_closure.get('external_state_checked') is not True))
             or ('execution_stopped' in report and report['execution_stopped'] is not True)
             or ('execution_stopped' in cleanup and cleanup['execution_stopped'] is not True)
             or cleanup.get('unknown_operations', []) != [] or cleanup.get('unsettled_operations', []) != []

@@ -150,6 +150,27 @@ generation and worker, and the same positive stopped/checked and unknown-operati
 guards. It uses the same file identity/hash rechecks and preserves the original
 result path and report object without rewriting either.
 
+Use `nova-cli-worker settle --run-id ID --note-file /absolute/note.json --check-only`
+to check the existing evidence before attempting settlement. It uses the same
+lock and validators, reads the current API, and reports `settlement_ready` without
+writing a settlement/state transition or launching work. Missing evidence remains
+an explicit error. When it passes and settlement is already authorized, use the
+same command without `--check-only`; no additional approval relay is introduced.
+
+For a failed invocation whose report truthfully lacks top-level stopped flags,
+the normal settle command accepts an explicit `owner_review` object containing
+canonical `review_path`, `review_sha256`, `interpretation_path` and
+`interpretation_sha256`. This requires the independent exact-run resource/UI
+owner's positive closure interpretation, matching same-run stopped facts, original
+wait/API history and pinned source/session/nonce evidence. It does not derive
+closure from a missing process or unknown executor fields. Real holds, later
+claims, remaining processes, changed/replaced evidence and unrelated unknowns
+still refuse settlement. The audit records all reviewed evidence hashes and
+`settlement_outcome: failed`; original executor unknown/false fields, the failed
+readiness bound, consumed nonce and incomplete acceptance remain unchanged.
+This is local admission bookkeeping, not a resource-release API, current live
+responsibility claim, permission grant, feature pass or replay authorization.
+
 An ended run that failed locally before its first claim needs distinct evidence:
 an explicit `unclaimed_stopped` worker report with stopped/checked cleanup, no
 app/simulator/source effects and a failed, unrepeated local claim attempt; a
