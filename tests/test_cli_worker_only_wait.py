@@ -41,6 +41,30 @@ class WorkerOnlyWaitTests(unittest.TestCase):
         # Existing nonempty dependency wait path remains independently valid.
         adapter.validate_settlement(*dependency_fixture())
 
+    def test_raw_wait_identity_can_be_omitted_but_never_contradict_authoritative_records(self):
+        for omitted in (('task',), ('generation',), ('task', 'generation')):
+            args = fixture()
+            for key in omitted: del args[6][key]
+            before = copy.deepcopy(args)
+            adapter.validate_settlement(*args)
+            self.assertEqual(before, args)
+            for index, delta in [(0, {'task': 'foreign'}), (1, {'last_owner': 'foreign'}),
+                                 (2, {'generation': 2}), (5, {'task': 'foreign'}),
+                                 (5, {'generation': 2}), (7, {'generation': 2}),
+                                 (6, {'task': 'foreign'}), (6, {'generation': 2}),
+                                 (6, {'generation': None}), (6, {'generation': True})]:
+                bad = copy.deepcopy(args); bad[index].update(delta)
+                with self.subTest(omitted=omitted, index=index, delta=delta), self.assertRaises(ValueError):
+                    adapter.validate_settlement(*bad)
+            for target in ('receipt', 'event'):
+                bad = copy.deepcopy(args)
+                if target == 'receipt': bad[1]['receipts'][-1]['generation'] = 2
+                else: bad[1]['events'][-1]['actor'] = 'destination'
+                # Even a self-consistent copy cannot replace authoritative identity/audit.
+                bad[7] = copy.deepcopy(bad[1])
+                with self.subTest(omitted=omitted, target=target), self.assertRaises(ValueError):
+                    adapter.validate_settlement(*bad)
+
     def test_wrong_owner_destination_unknown_effects_and_holds(self):
         cases = [
             (0, {'worker': 'destination'}), (0, {'completion_verified': True}),
@@ -90,8 +114,10 @@ class WorkerOnlyWaitTests(unittest.TestCase):
         with self.assertRaises(ValueError): adapter.validate_settlement(*args)
 
     def test_public_check_and_apply_preserve_originals_and_reject_newer_state(self):
-        for bad in (None, 'later-api', 'later-local', 'symlink', 'missing-readback', 'changed-input'):
+        for bad in (None, 'raw-input', 'later-api', 'later-local', 'symlink', 'missing-readback', 'changed-input'):
             args=fixture(); run,task,response,note,worker,report,wait,readback=args
+            if bad == 'raw-input':
+                del wait['task']; del wait['generation']
             with tempfile.TemporaryDirectory() as directory:
                 root=Path(directory).resolve(); d=root/run['run_id']; d.mkdir()
                 config=root/'config.json'; adapter.save(config, {'worker':worker,'hostname':'fixture'})
@@ -117,13 +143,14 @@ class WorkerOnlyWaitTests(unittest.TestCase):
                     if bad=='missing-readback':(d/'task-readback.json').unlink()
                     if bad=='changed-input':adapter.save(d/'wait-receipt.json',{**wait,'worker':'foreign'})
                     before={p.name:p.read_bytes() for p in d.iterdir()}
+                    rejected = bad not in (None, 'raw-input')
                     with patch('sys.argv',argv),contextlib.redirect_stdout(io.StringIO()):
-                        if bad:
+                        if rejected:
                             with self.assertRaises(ValueError):adapter.main()
                         else:adapter.main()
                     spawn.assert_not_called();account.assert_not_called();process.assert_not_called()
                 self.assertTrue(all(call.args[0]=='/api/tasks/'+task['id'] for call in client.request.call_args_list))
-                if bad:self.assertEqual(before,{p.name:p.read_bytes() for p in d.iterdir()})
+                if rejected:self.assertEqual(before,{p.name:p.read_bytes() for p in d.iterdir()})
                 else:
                     self.assertEqual(originals['state.json'],(d/'worker-only-wait-state-before.json').read_bytes())
                     self.assertEqual({**run,'status':'settled','prior_status':'needs_attention'},json.loads((d/'state.json').read_text()))

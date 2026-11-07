@@ -153,7 +153,13 @@ result path and report object without rewriting either.
 A worker-only handoff is a separate supported wait shape: the original owner
 remains in the run, report and `last_owner`, while the original wait input's
 `worker` names the distinct destination required by the fresh queued task.
-Dependencies must be empty (the original input may omit that key). Settlement
+Dependencies must be empty (the original input may omit that key). The raw wait
+input may also omit `task` and `generation`: these stay mandatory and exact in
+the owner report, finish response, full readback and authenticated API receipt.
+The owning claim and waiting audit bind the same destination and evidence.
+Present input identity fields must agree; they are never inserted into or
+rewritten in the original receipt. Missing authoritative identity still refuses
+settlement. Settlement
 requires the exact original finish and full readback, unchanged receipts/events
 and counters, the owning claim followed by its stopped/checked waiting audit,
 and positive cleanup with no unknown effects or independent approval holds.

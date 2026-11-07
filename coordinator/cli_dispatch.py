@@ -940,7 +940,11 @@ def validate_worker_only_wait(run, task, response, report, wait_receipt, readbac
             or any(k in cleanup and cleanup[k] != v for k, v in
                    (('task', task['id']), ('generation', task['generation']), ('worker', worker)))
             or ('next_worker' in report and report['next_worker'] != destination)
-            or wait_receipt.get('task') != task['id'] or wait_receipt.get('generation') != task['generation']
+            # The CLI wait input is not a task envelope: identity may be omitted.
+            # Mandatory owner report, finish, readback, API receipt and audit bind it.
+            or ('task' in wait_receipt and wait_receipt['task'] != task['id'])
+            or ('generation' in wait_receipt and (type(wait_receipt['generation']) is not int
+                                                  or wait_receipt['generation'] != task['generation']))
             or wait_receipt.get('worker') != destination
             or ('worker_id' in wait_receipt and wait_receipt['worker_id'] != worker)
             or wait_receipt.get('dependencies', []) != []
