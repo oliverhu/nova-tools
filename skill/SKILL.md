@@ -1,36 +1,46 @@
 ---
 name: nova-coordination
-description: Coordinate, dispatch, implement and report Nova engineering work through the private queue using the Studio host and VM developers, with direct worker reports and Coordinator completion recording.
+description: Operate Nova app workers and service-only orchestration through nova-coord, with verified session enrollment, readiness, durable handoffs and API outcomes.
 ---
 
 # Nova task queue
 
-The current human-approved workflow (2026-11-03) uses three developer workers:
-Studio (`oliverhu-mac-studio`), VM1 (`oliverhu-mac-studio-vm1`) and VM2
-(`oliverhu-mac-studio-vm2`). Legacy Mac/Mini identities retain history and stay
-retired unless explicitly restored. Use `~/.local/bin/nova-coord`; never display
-private client configuration, credentials or claim tokens. The central service
-is authoritative for task ownership and eligibility.
+The human-approved workflow as of **2026-11-07** uses Codex app chats as
+workers and `~/.local/bin/nova-coord` as the service interface. All tasks, progress,
+blockers, handoffs, decisions and outcomes belong in the service. Do not send
+peer-chat messages or revive retired Coordinator/Dispatcher chats. Do not use a
+Codex CLI model runtime for new work. An ordinary shell command through the Nova
+CLI remains the supported interface.
 
-## Current agent roles
+## Current roles and session bootstrap
 
-- **Nova — Delivery Coordinator:** intake, priorities, task submission/IDs,
-  assignment, human decisions, status and recording developer-reported completion.
-  Performs **no additional source, runtime, UI or release validation**.
-- **Nova — Queue Dispatcher:** the existing 15-minute readiness/availability check;
-  wakes an eligible idle mapped developer for an exact task. Does not claim for
-  workers or duplicate Coordinator assignments.
-- **VM1/VM2 and Studio developers:** own implementation, actual tests/acceptance,
-  source audit, main integration and settled cleanup in isolated task checkouts.
-  Send completion reports directly to Coordinator.
-- **Publisher:** an eligible developer executing a separate release claim, owning
-  actual delivery validation and reporting. Ordinary feature tasks never publish.
+- **Service Coordinator:** intake, priorities, deduplicated task submission,
+  human decisions, administrative outcome checks and instruction upkeep. Does
+  not repeat developer product validation or claim as another worker.
+- **Service Readiness:** inspect service eligibility, adoption and capability
+  gaps. No chat wake-ups, assignments on behalf of workers or extra polling loop.
+- **App developers:** self-claim, implement, actually validate, audit and integrate
+  in isolated checkouts, then finish and verify the API outcome. Put the handoff
+  in the service inbox; a chat reply is not a task result.
+- **Publisher:** an eligible developer on a separate authorized release claim.
+  Ordinary feature work does not publish.
 
-Coordinator and Dispatcher are chat roles, not extra worker identities. Discover
-current host/chat/project bindings from the private route map; no hardcoded chat
-IDs or copied credentials. Use the existing human-authorized Nova-to-Nova routing
-for scoped reports. Preserve actual approval blocks and current user instructions.
-The repository's `docs/agent-coordination.md` explains the full role and API mapping.
+New worker chats start from repo/service state, without old conversation history.
+Before claims, use the service's approved instruction commit and verified
+inventory, actual readback, authenticated app-session enrollment and scoped
+permission/capability qualification. Registration alone does not establish
+readiness. Use your own private `--app-session` file on task commands, or set
+`NOVA_APP_SESSION_FILE` for that invocation. Never use another chat's claim files.
+The repository's `docs/app-session-protocol.md` defines exact enrollment, policy,
+qualification and inbox APIs; `docs/app-worker-bootstrap.md` covers repo sync.
+If these APIs are not deployed, stay onboarding-only and record the missing
+prerequisite. Do not substitute peer messages or CLI model execution.
+
+Each enrolled machine keeps its own Nova credential and each chat its own session
+binding. Codex account choice is separate. A new or restored VM must verify
+GitHub/service access and actual planned runner permissions before feature work.
+Preserve existing claims and unknown effects through explicit supported handoff
+or audited reset; retiring a chat does not prove its processes stopped.
 
 ## Suspended large-text checks
 
@@ -43,7 +53,7 @@ passed; do not make it a completion, merge, release or repair gate. Continue
 unrelated checks and preserve product behavior and prior evidence. This changes
 test scope only; it grants no OS/tool permission or permission-denial bypass.
 Coordinator keeps this policy installed and acknowledged through the existing
-instruction-upkeep process; Dispatcher applies it to assignments and reports.
+instruction-upkeep process; Service Readiness applies it to assignments and reports.
 
 ## Keep installed instructions current
 
@@ -66,9 +76,9 @@ artifacts. Older task checkouts may retain historical instructions: have their
 owners load the current canonical project policy at a safe boundary and carry
 the documentation change through normal integration when safe.
 
-After an update, tell every active developer and Dispatcher to reread their
-installed coordination skill and changed role documents at the next safe boundary
-while preserving current work and claims. Coordinator also rereads the update.
+After an update, publish the expected revision and instruction handoff in the
+service. Active developers and Service Readiness load changed instructions at the
+next safe boundary while preserving current work and claims. Coordinator also rereads the update.
 Track each actor's readback of the applicable source commits/content hashes;
 delivered messages alone do not prove the instructions were loaded. Coordinator
 keeps the expected revision and current routes in private operational state.
@@ -78,7 +88,7 @@ client/service code revision. After a skill change, refresh the existing client
 distribution bundle so a later client upgrade carries the current instructions.
 Use the existing upkeep activity; no new polling schedule or app restart.
 
-Dispatcher checks that the mapped worker's synchronization receipt matches the
+Service Readiness checks that the mapped worker's synchronization receipt matches the
 expected revision before new assignments. If stale or unavailable, report it to
 Coordinator for repair; do not claim for the worker, interrupt existing work or
 invent a new approval gate. Recheck after client upgrades, which may install an
@@ -92,7 +102,7 @@ and selected provisioning identities; SSH server keys, queue credentials, OS
 consent and machine/chat bindings remain individual. Record expected public
 fingerprints, profile revisions and actual capability gaps. Compare after
 onboarding, asset renewal, VM restore or a reported access failure through
-existing coordination activity. Dispatcher requires the capabilities relevant
+existing coordination activity. Service Readiness requires the capabilities relevant
 to the assigned task; installed assets alone do not establish account access,
 signing use, notarization or release readiness. Repair only the differing
 component and reuse current evidence rather than repeating product validation.
@@ -108,7 +118,7 @@ missing prerequisites before starting; they do not request consent repeatedly,
 add confirmation relays, reset grants or broaden access. A partial UI tree or
 unsettled operation is not by itself evidence of a missing permission.
 
-Before new feature assignments, Coordinator and Dispatcher require the mapped
+Before new feature assignments, Coordinator and Service Readiness require the mapped
 worker's actual permission-onboarding report for all planned app/runner contexts,
 including Local Network for NovaFeatureCheck where required. Installed skill
 hashes or local tool grants alone are insufficient. Developers verify this before
@@ -169,8 +179,8 @@ running task or infer that an offline worker's processes stopped.
 A routine worker implements, meaningfully tests, and merges its changes into
 main. Rebase/resolve conflicts and rerun affected checks if main advances;
 use normal non-force pushes. Record exact branch/commit/merge and evidence.
-Send Coordinator the task ID/generation, outcome, landed commit, actual results,
-receipt path, limitations and settled-execution evidence. Coordinator records it
+Post a service inbox handoff for Coordinator with task ID/generation, outcome,
+landed commit, actual results, receipt references, limitations and cleanup. Coordinator records it
 without retesting; never call partial acceptance complete. Evidence sent before
 the verified finish readback is pending service completion, not a completed task.
 For service completion,
@@ -195,7 +205,7 @@ argument is omitted; only a receipt without an outcome retains the legacy
 completed default. Client and service reject contradictory outcomes and refuse
 completion when `acceptance_complete` is explicitly false.
 
-Before reporting completion, **developers and Dispatcher verify the actual API
+Before reporting completion, **developers and Service Readiness verify the actual API
 outcome**, using the finish response and a fresh `nova-coord show ID` readback.
 Check the expected task/generation, final `status: completed`, the completed
 step position, settled execution and consistency with the actual receipt. An
@@ -206,7 +216,7 @@ does not establish whole-task completion. Report blocked, failed, queued or
 pending states as returned, retaining incomplete acceptance and limitations.
 
 Coordinator records completion only after this administrative API/receipt check;
-it does not repeat developer product validation. Dispatcher uses current API
+it does not repeat developer product validation. Service Readiness uses current API
 outcomes for completion reports and dependency readiness, and flags contradictory
 records to Coordinator instead of treating them as qualified prerequisites. On
 a mismatch or uncertain finish response, preserve the receipt, generation,
@@ -214,7 +224,7 @@ history, dependencies and counters, then inspect `show` before any retry. Use th
 existing supported, audited admin correction for a genuinely erroneous recorded
 completion; never replay a stale finish, edit the database or reset counters.
 Coordinator owns keeping this rule installed and acknowledged across the three
-developers and Dispatcher through the synchronization procedure above.
+developers and Service Readiness through the synchronization procedure above.
 
 Pending External Approval never retries automatically; do not resubmit approval
 requests. Resume only after actual approval is verified and the task is explicitly
@@ -445,25 +455,21 @@ the latest public installer, release metadata and live infrastructure. Do not
 bump/rebuild the app or mark unrelated app source as published. A full app release
 still requires its exact signed/notarized artifacts and public verification.
 
-## Polling
+## Local app wake and service pull
 
-Only the existing **Nova — Queue Dispatcher** polls every 15 minutes. Legacy
-independent worker polls remain paused. Its private current mapping identifies
-Studio and VM developers; old names or queued heartbeats must not revive retired
-workers. Keep this separate from the service's hourly release timer.
+Each qualified app worker uses one supported local heartbeat, normally every
+15 minutes, with the durable prompt referencing this skill and service policy.
+Provision it in the worker's own app/account context. Verify an actual scheduled
+wake during onboarding. Retired dispatcher and CLI execution schedules remain
+disabled; do not add per-task monitors or competing assignment loops.
 
-Dispatcher checks authoritative readiness and actual chat availability, then
-wakes an eligible idle developer for a concrete task without duplicating a direct
-Coordinator assignment. Workers self-claim and continue their existing claims
-first. Pending approvals, unresolved dependencies and retry cooldowns are not
-wake-up reasons. No extra Coordinator validation or peer approval stages.
-
-After completion OR any stopped/blocked execution settles, immediately check
-`next` once in the same run. Continue eligible tasks until none remain, then stop
-until a dispatcher wake-up or direct human request. Do not create additional
-worker or per-task schedules. Keep the lightweight capacity/repository reporters
-running; these do not invoke models or execute engineering tasks.
-Notify only completion, material failure, or a specific required human action.
+On wake, check authenticated session policy, instruction adoption and readiness.
+Resume only your own session's current claim; otherwise self-claim eligible work.
+After completion or settled stopped/blocked execution, check `next` and continue
+until no eligible work remains. Preserve pending approvals and unknown outcomes.
+No peer messages are needed. Keep lightweight capacity/repository reporters
+running; they do not invoke models or execute engineering tasks. Report only
+material results, failures or a specific required human action.
 
 ## Legacy reference artifacts from oliver-mac
 
@@ -498,12 +504,12 @@ its owner, remaining limits and cleanup. Preserve current acceptance, claims,
 dependencies, human stops and unknown operations. A handoff is not a claim,
 approval, qualified result or completed service transition.
 
-Act on an actionable request within existing authority. Send another message only
-for a material state change, concrete blocker, required decision or requested
-readback. Do not reply merely “acknowledged”, echo unchanged status or request an
-acknowledgment of an acknowledgment. No new chats, relays, timers or polls. This
-does not suppress required service/message protocol acknowledgments, actual hash
-adoption readbacks, approval receipts, or finish-response/fresh-API verification.
+Use `nova-coord inbox-post --file /private/handoff.json` for actionable service
+handoffs and `nova-coord inbox --after CURSOR` to read your own inbox. Preserve the
+cursor only after processing its batch. Stable request IDs make retries
+idempotent. Do not send chat messages, acknowledgment loops or unchanged status
+relays. Service records, actual adoption readback, approval receipts and
+finish-response/fresh-API verification remain required.
 Delivery, installation, actor adoption and actual acceptance stay distinct.
 
 Instruction upkeep uses the existing Coordinator activity. Record each real host's
@@ -511,4 +517,4 @@ source commits, expected/observed installed hashes and verification time; record
 each actual actor's loaded hashes/run or chat separately at a safe boundary.
 Unobserved installation or adoption stays pending with its owner and next action;
 do not copy another host's receipt or ask actors to acknowledge unchanged bytes
-again. Dispatcher reports changes to these records, not repeated reminders.
+again. Service Readiness reports changes to these records, not repeated reminders.

@@ -138,6 +138,8 @@ class Store:
             db.executescript(event_dispatch.SCHEMA)
             from . import resource_scope
             db.executescript(resource_scope.SCHEMA)
+            from . import app_sessions
+            db.executescript(app_sessions.SCHEMA)
             columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
             if "last_owner" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN last_owner TEXT")
@@ -568,7 +570,7 @@ class Store:
             if body.get('generation') != row['generation']:
                 raise Conflict('Task generation changed; reload before scheduling')
             if actor != 'admin':
-                self.owned(db, actor, ident, body.get('claim_token'), body.get('generation'))
+                self.owned(db, actor, ident, body.get('claim_token'), body.get('generation'), body.get('app_binding'))
             elif row['status'] == 'running':
                 raise Conflict('Running work must be deferred by its owning worker')
             req = json.loads(row['requirements'])
@@ -611,14 +613,20 @@ class Store:
             task = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
             return {**self.public_task(task), **self.scheduling(db,task)}
 
-    def claim(self, worker, task_id=None, dispatch_binding=None):
-        from . import event_dispatch
+    def claim(self, worker, task_id=None, dispatch_binding=None, app_binding=None):
+        from . import event_dispatch, app_sessions
         with self.transaction() as db:
+            session = app_sessions.ready(self, db, worker, app_binding)
             self.expire(db)
             rows = db.execute("SELECT * FROM tasks WHERE status IN ('queued','blocked') ORDER BY priority DESC,created,id").fetchall()
             for row in rows:
                 if task_id and row["id"] != task_id:
                     continue
+                if session:
+                    try:
+                        app_sessions.ready(self, db, worker, app_binding, row)
+                    except Conflict:
+                        continue
                 if not event_dispatch.claim_allowed(db, row, worker, dispatch_binding, store=self):
                     continue
                 if publication_policy.admission(self, db, row):
@@ -667,6 +675,7 @@ class Store:
                 db.execute("""UPDATE tasks SET status='running',owner=?,claim_hash=?,generation=?,lease_until=?,updated=?,retry_after=NULL WHERE id=?""",
                            (worker,hashlib.sha256(token.encode()).hexdigest(),generation,now+self.lease_seconds,now,row["id"]))
                 db.execute("UPDATE workers SET last_claim=? WHERE id=?", (now,worker))
+                app_sessions.claimed(db, row, generation, worker, session)
                 event_dispatch.claimed(self, db, row, worker, generation)
                 from . import resource_scope
                 resource_scope.claimed(self, db, row, worker, generation)
@@ -675,21 +684,25 @@ class Store:
                 return {"task": task, "claim_token": token, "resources": resources, "heartbeat_seconds": 30}
             return {"task": None, "reason": "No eligible task. Check capacity, dependencies and existing task ownership."}
 
-    def owned(self, db, worker, ident, token, generation):
+    def owned(self, db, worker, ident, token, generation, app_binding=None):
         row = db.execute("SELECT * FROM tasks WHERE id=?", (ident,)).fetchone()
         if (not row or row["owner"] != worker or row["generation"] != generation or
             not isinstance(token, str) or not secrets.compare_digest(row["claim_hash"] or "", hashlib.sha256(token.encode()).hexdigest())):
             raise Conflict("Stale or foreign claim")
+        from . import app_sessions
+        app_sessions.guard(self, db, worker, row, app_binding, cleanup=True)
         return row
 
     def heartbeat(self, worker, ident, body):
         with self.transaction() as db:
             self.expire(db)
-            row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"))
+            row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"),body.get("app_binding"))
             if row["status"] != "running":
                 raise Conflict("Task is not running; stop execution and inspect its recorded outcome")
             progress = body.get("progress", row["progress"])
             phase = body.get('phase')
+            from . import app_sessions
+            app_sessions.guard(self, db, worker, row, body.get('app_binding'), cleanup=phase == 'cleanup')
             if phase is not None:
                 if phase not in ('implementing', 'testing', 'cleanup'):
                     raise Invalid('Unknown explicit execution phase')
@@ -720,7 +733,9 @@ class Store:
             raise Invalid(str(error)) from None
         with self.transaction() as db:
             self.expire(db)
-            row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"))
+            row = self.owned(db,worker,ident,body.get("claim_token"),body.get("generation"),body.get("app_binding"))
+            from . import app_sessions
+            app_sessions.guard(self, db, worker, row, body.get('app_binding'), cleanup=outcome != 'completed')
             target = json.loads(row["result"]).get("release_target")
             if target:
                 receipt = {**receipt, "release_target": target}
@@ -789,7 +804,7 @@ class Store:
     def retry(self, worker, ident, body):
         # Only the owning worker can recover its settled failed/blocked attempt.
         with self.connection() as db:
-            self.owned(db, worker, ident, body.get("claim_token"), body.get("generation"))
+            self.owned(db, worker, ident, body.get("claim_token"), body.get("generation"), body.get("app_binding"))
         return self.reconcile(worker, ident, {**body, "action": "retry"})
 
     @staticmethod
@@ -1015,7 +1030,7 @@ class Store:
                 if not row or row['status'] != 'pending_external_approval' or row['generation'] != entry['generation']:
                     raise Conflict('Covered task is no longer pending at the supplied generation: '+entry['id'])
                 if actor != 'admin':
-                    self.owned(db,actor,row['id'],claims[row['id']].get('claim_token'),entry['generation'])
+                    self.owned(db,actor,row['id'],claims[row['id']].get('claim_token'),entry['generation'],claims[row['id']].get('app_binding'))
                 receipt = json.loads(row['result'])
                 if receipt.get('execution_stopped') is not True:
                     raise Conflict('Prior execution has not settled: '+row['id'])
@@ -1297,7 +1312,7 @@ class Store:
             if action == 'retry' and row['fix_attempts_used'] >= self.attempt_limit(row) and row['reassignment_count'] >= REASSIGNMENT_LIMIT:
                 raise Conflict(f'{self.attempt_limit(row)} attempts and {REASSIGNMENT_LIMIT} host reassignments exhausted')
             if actor != "admin":
-                self.owned(db, actor, ident, body.get("claim_token"), body.get("generation"))
+                self.owned(db, actor, ident, body.get("claim_token"), body.get("generation"), body.get("app_binding"))
                 if action != "retry":
                     raise Conflict("Workers may only retry their own stopped attempts")
             step = row["step"] + (action == "complete")

@@ -99,6 +99,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(403,{"error":"Cross-origin requests are not allowed"})
         store=self.server.store
         if self.command=="GET":
+            if path == '/api/worker/app-session':
+                from . import app_sessions
+                return self.respond(200, app_sessions.status(store, actor))
             if path == '/api/worker/resource-scope/policy':
                 from .workers import MINI_VM_WORKERS
                 if actor not in MINI_VM_WORKERS:
@@ -125,6 +128,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            app_worker = re.fullmatch(r'/api/workers/([a-z0-9-]+)/app/(policy|qualify)', path)
+            if app_worker:
+                if actor != 'admin': return self.respond(403, {'error': 'Administrator required'})
+                from . import app_sessions
+                worker, action = app_worker.groups()
+                function = app_sessions.configure if action == 'policy' else app_sessions.qualify
+                return self.respond(200, function(store, actor, worker, body))
+            if path in ('/api/worker/app/register', '/api/worker/app/adopt'):
+                if actor not in WORKERS: return self.respond(403, {'error': 'Enrolled worker required'})
+                from . import app_sessions
+                function = app_sessions.register if path.endswith('/register') else app_sessions.adopt
+                return self.respond(200, function(store, actor, body))
+            if path in ('/api/inbox/post', '/api/inbox/read'):
+                if actor not in ('admin', *WORKERS): return self.respond(403, {'error': 'Authenticated actor required'})
+                from . import app_sessions
+                function = app_sessions.post_message if path.endswith('/post') else app_sessions.inbox
+                return self.respond(200, function(store, actor, body))
             capability_task = re.fullmatch(r'/api/tasks/([0-9a-f]{16})/require-capabilities', path)
             if capability_task:
                 if actor != 'admin':
@@ -220,7 +240,7 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/api/worker/pulse","/api/worker/claim"):
                 if actor not in WORKERS:
                     return self.respond(403,{"error":"Use a worker identity"})
-                result=store.pulse(actor,body) if path.endswith("pulse") else store.claim(actor,body.get("task_id"),body.get('dispatch_binding'))
+                result=store.pulse(actor,body) if path.endswith("pulse") else store.claim(actor,body.get("task_id"),body.get('dispatch_binding'),body.get('app_binding'))
                 return self.respond(200,result)
             match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})/(heartbeat|finish|reconcile|retry|defer|correct-outcome|correct-attempts)",path)
             if match:

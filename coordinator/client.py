@@ -43,8 +43,17 @@ class Client:
         self.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPSHandler(context=ctx))
         self.state=self.path.parent/"claims"
         self.state.mkdir(mode=0o700,exist_ok=True)
+        from .app_client import attach
+        attach(self, os.environ.get('NOVA_APP_SESSION_FILE'))
 
     def request(self,path,body=None):
+        if body is not None and (path in ('/api/worker/claim', '/api/inbox/post') or
+                (path.startswith('/api/tasks/') and path.rsplit('/', 1)[-1] in
+                 ('heartbeat', 'finish', 'retry', 'defer'))):
+            from .app_client import binding
+            session = binding(self)
+            if session is not None:
+                body = {**body, 'app_binding': session}
         request=urllib.request.Request(self.config["url"].rstrip("/")+path,
             data=json.dumps(body).encode() if body is not None else None,
             headers={"Authorization":"Bearer "+self.config["token"],"Content-Type":"application/json"})
@@ -114,7 +123,7 @@ class Client:
             resource_readiness = self.require_fresh_reporter()
         body = {"task_id": ident}
         from .workers import MINI_VM_WORKERS
-        if getattr(self, 'config', {}).get('worker') in MINI_VM_WORKERS:
+        if getattr(self, 'config', {}).get('worker') in MINI_VM_WORKERS and not getattr(self, 'app_session_path', None):
             from .cli_messages import own_run, ROOT
             from .cli_event_dispatch import claim_binding
             binding = claim_binding(ROOT, own_run(ROOT))
@@ -315,8 +324,23 @@ def cli_followup(client, ident):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,default=CONFIG)
+    parser.add_argument('--app-session', type=Path, help='Private per-chat session file (or NOVA_APP_SESSION_FILE)')
     sub=parser.add_subparsers(dest="command",required=True)
     sub.add_parser("status")
+    sub.add_parser('app-status')
+    registration = sub.add_parser('app-register')
+    registration.add_argument('--session-file', type=Path, required=True)
+    registration.add_argument('--session-id', required=True)
+    registration.add_argument('--host-id', required=True)
+    registration.add_argument('--account-sha256', required=True)
+    registration.add_argument('--expected-epoch', type=int, required=True)
+    adoption = sub.add_parser('app-adopt'); adoption.add_argument('--file', type=Path, required=True)
+    for name in ('app-policy', 'app-qualify'):
+        command = sub.add_parser(name); command.add_argument('--worker', required=True)
+        command.add_argument('--file', type=Path, required=True)
+    inbox = sub.add_parser('inbox'); inbox.add_argument('--after', type=int, default=0)
+    inbox.add_argument('--limit', type=int, default=50)
+    post = sub.add_parser('inbox-post'); post.add_argument('--file', type=Path, required=True)
     sub.add_parser("pulse")
     add=sub.add_parser("add")
     add.add_argument("title",nargs="?")
@@ -358,7 +382,24 @@ def main():
     ui=sub.add_parser("ui");ui.add_argument("--port",type=int,default=18766)
     args=parser.parse_args()
     client=Client(args.config)
-    if args.command=="status":result=client.request("/api/state")
+    from . import app_client
+    if args.app_session: app_client.attach(client, args.app_session)
+    if args.command == 'app-register':
+        result = app_client.register(client, args.session_file, args.session_id, args.host_id,
+                                     args.account_sha256, args.expected_epoch)
+    elif args.command == 'app-status': result = client.request('/api/worker/app-session')
+    elif args.command == 'app-adopt':
+        result = client.request('/api/worker/app/adopt',
+            {**json.loads(args.file.read_text()), 'binding': app_client.binding(client)})
+    elif args.command in ('app-policy', 'app-qualify'):
+        action = 'policy' if args.command == 'app-policy' else 'qualify'
+        result = client.request('/api/workers/' + args.worker + '/app/' + action,
+                                json.loads(args.file.read_text()))
+    elif args.command == 'inbox':
+        result = client.request('/api/inbox/read', {'after': args.after, 'limit': args.limit})
+    elif args.command == 'inbox-post':
+        result = client.request('/api/inbox/post', json.loads(args.file.read_text()))
+    elif args.command=="status":result=client.request("/api/state")
     elif args.command=="show":result=client.request("/api/tasks/"+args.task)
     elif args.command=="pulse":result=client.pulse()
     elif args.command=="add":
