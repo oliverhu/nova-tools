@@ -143,6 +143,13 @@ file's bytes and filesystem identity through validation and audit; a replacement
 changed proof, unknown operation or conflicting flag refuses settlement. Original
 reports, receipts and proof stay unchanged, and the local audit includes its hash.
 
+The original result may instead name that exact canonical same-run file while the
+report contains its parsed cleanup object. This shape requires the report's
+immutable evidence reference and byte-parsed object equality, exact task,
+generation and worker, and the same positive stopped/checked and unknown-operation
+guards. It uses the same file identity/hash rechecks and preserves the original
+result path and report object without rewriting either.
+
 An ended run that failed locally before its first claim needs distinct evidence:
 an explicit `unclaimed_stopped` worker report with stopped/checked cleanup, no
 app/simulator/source effects and a failed, unrepeated local claim attempt; a

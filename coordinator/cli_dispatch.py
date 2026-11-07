@@ -513,6 +513,18 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
            for k in immutable) or readback.get('receipts') != task.get('receipts'):
         raise ValueError('Original target, constraints, counters and receipt history must remain unchanged')
     result = task.get('result'); cleanup = report.get('cleanup'); cleanup_proof = None
+    if isinstance(cleanup, dict) and isinstance(result.get('cleanup'), str):
+        path = ROOT/run['run_id']/'stopped-cleanup.json'
+        if (result['cleanup'] != str(path) or not isinstance(report.get('evidence_paths'), list)
+                or report['evidence_paths'].count(str(path)) != 1):
+            raise ValueError('Original result path and report reference must identify the exact same-run cleanup proof')
+        raw, identity = read_cleanup_proof(path)
+        proof = json.loads(raw)
+        if (proof != cleanup or proof.get('task') != task['id']
+                or type(proof.get('generation')) is not int or proof['generation'] != task['generation']
+                or proof.get('worker') != worker):
+            raise ValueError('Original report must equal the exact task/generation/worker cleanup proof')
+        cleanup_proof = (path, raw, identity)
     if isinstance(cleanup, str):
         path = ROOT/run['run_id']/'stopped-cleanup.json'
         if (not cleanup.strip() or result.get('cleanup') != cleanup
