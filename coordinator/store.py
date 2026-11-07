@@ -10,6 +10,7 @@ import secrets
 import re
 import sqlite3
 import time
+import threading
 import uuid
 from pathlib import Path
 from .approvals import approval_payload, approval_id
@@ -125,6 +126,7 @@ class Store:
         if heavy_worker is not None and heavy_worker not in WORKERS:
             raise Invalid("Unknown heavy compilation worker")
         self.heavy_worker = heavy_worker
+        self.dispatch_changed = threading.Condition()
         self.path, self.clock, self.lease_seconds = str(path), clock, lease_seconds
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
@@ -132,6 +134,8 @@ class Store:
             db.executescript(SCHEMA)
             db.executescript(publication_policy.SCHEMA)
             db.executescript(approval_links.SCHEMA)
+            from . import event_dispatch
+            db.executescript(event_dispatch.SCHEMA)
             columns = {r[1] for r in db.execute("PRAGMA table_info(tasks)")}
             if "last_owner" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN last_owner TEXT")
@@ -202,7 +206,11 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             try:
                 yield db
+                changed = db.total_changes > 0
                 db.commit()
+                if changed:
+                    with self.dispatch_changed:
+                        self.dispatch_changed.notify_all()
             except BaseException:
                 db.rollback()
                 raise
@@ -599,12 +607,15 @@ class Store:
             task = db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone()
             return {**self.public_task(task), **self.scheduling(db,task)}
 
-    def claim(self, worker, task_id=None):
+    def claim(self, worker, task_id=None, dispatch_binding=None):
+        from . import event_dispatch
         with self.transaction() as db:
             self.expire(db)
             rows = db.execute("SELECT * FROM tasks WHERE status IN ('queued','blocked') ORDER BY priority DESC,created,id").fetchall()
             for row in rows:
                 if task_id and row["id"] != task_id:
+                    continue
+                if not event_dispatch.claim_allowed(db, row, worker, dispatch_binding):
                     continue
                 if publication_policy.admission(self, db, row):
                     continue
@@ -652,6 +663,7 @@ class Store:
                 db.execute("""UPDATE tasks SET status='running',owner=?,claim_hash=?,generation=?,lease_until=?,updated=?,retry_after=NULL WHERE id=?""",
                            (worker,hashlib.sha256(token.encode()).hexdigest(),generation,now+self.lease_seconds,now,row["id"]))
                 db.execute("UPDATE workers SET last_claim=? WHERE id=?", (now,worker))
+                event_dispatch.claimed(self, db, row, worker, generation)
                 self.event(db, worker, "claimed", row["id"], f"Step {row['step']+1}; generation {generation}; resources {resources}")
                 task = self.public_task(db.execute("SELECT * FROM tasks WHERE id=?", (row["id"],)).fetchone())
                 return {"task": task, "claim_token": token, "resources": resources, "heartbeat_seconds": 30}
@@ -671,6 +683,18 @@ class Store:
             if row["status"] != "running":
                 raise Conflict("Task is not running; stop execution and inspect its recorded outcome")
             progress = body.get("progress", row["progress"])
+            phase = body.get('phase')
+            if phase is not None:
+                if phase not in ('implementing', 'testing', 'cleanup'):
+                    raise Invalid('Unknown explicit execution phase')
+                if phase == 'testing':
+                    db.execute("UPDATE dispatch_wakes SET first_test_at=COALESCE(first_test_at,?) "
+                               "WHERE worker=? AND task_id=? AND claim_generation=? AND status='claimed'",
+                               (self.clock(), worker, ident, row['generation']))
+                db.execute("UPDATE dispatch_wakes SET phase=?,phase_at=? "
+                           "WHERE worker=? AND task_id=? AND claim_generation=? AND status='claimed'",
+                           (phase, self.clock(), worker, ident, row['generation']))
+                self.event(db, worker, 'execution-phase', ident, encoded({'generation': row['generation'], 'phase': phase}))
             if not isinstance(progress, str) or len(progress)>12000:
                 raise Invalid("Invalid progress")
             db.execute("UPDATE tasks SET lease_until=?,updated=?,progress=? WHERE id=?",
@@ -1363,6 +1387,10 @@ class Store:
             workers=[]
             for row in db.execute("SELECT * FROM workers ORDER BY id"):
                 w=dict(row); w["capacity"]=json.loads(w["capacity"]); w["online"]=w["seen"]>self.clock()-90; workers.append(w)
+                from .event_dispatch import projection
+                dispatch = projection(self, db, row['id'])
+                if dispatch is not None:
+                    w['event_dispatch'] = dispatch
             tasks=[self.public_task(r) for r in db.execute("SELECT * FROM tasks ORDER BY created DESC LIMIT 500")]
             for t in tasks:
                 row = db.execute("SELECT * FROM tasks WHERE id=?",(t['id'],)).fetchone()
@@ -1371,7 +1399,7 @@ class Store:
                 if t["status"]=="queued":
                     t["preferred_worker"] = self.candidate(db,row) if t['ready'] else None
             return {"server_time":self.clock(),"workers":workers,"tasks":tasks,
-                "capabilities":{"approval_receipts":1,"approval_question_links":1,"approval_recovery":"verified_decisions_only",
+                "capabilities":{"event_dispatch":1,"approval_receipts":1,"approval_question_links":1,"approval_recovery":"verified_decisions_only",
                                 "outcome_correction":1,"finish_outcome_consistency":1,"attempt_correction":1,"attempt_allowances":1,
                                 "attempt_allowance_amendments":1,"ios_upload_only_releases":1,"publication_policy":1},
                 "publication_candidates":[publication_policy.target(r) for r in db.execute("SELECT result FROM tasks WHERE task_type='publish' AND status NOT IN ('completed','cancelled')")],
