@@ -462,7 +462,7 @@ Only local admission is settled. The original owner must submit a distinct unsig
 plan through normal review and stop on denial; signing/install/launch and rejected
 command retry remain forbidden. An offline packet check cannot settle that guest.
 
-## Active CLI follow-ups (candidate; both-Mini qualification required)
+## Active CLI follow-ups
 
 The guest-local `nova-cli-worker message --note-file /absolute/private.json`
 route stages an ordered follow-up for one already running task/run. It uses the
@@ -514,7 +514,6 @@ fails closed. Signal-0 liveness inspection may require normal automatic approval
 review in a restricted CLI tool context; a denial leaves delivery unavailable.
 Never remove the check or switch to an unreviewed route to conceal that limit.
 
-Current qualification and source commit belong in private task receipts, not this
-protocol document. Do not install or call this candidate fully accepted until
-actual delivery and readback on both Minis are recorded and normal source
-integration is complete.
+Actual delivery/readback qualification and source commits belong in private task
+receipts. Record installation separately from source integration; existing running
+supervisors keep their loaded implementation until their normal settled boundary.
