@@ -181,6 +181,28 @@ class EventDispatchTests(unittest.TestCase):
         worker = next(w for w in self.store.snapshot()['workers'] if w['id'] == self.worker)
         self.assertEqual(worker['event_dispatch']['latest_run']['time_to_first_test_seconds'], 3)
 
+    def test_projection_stale_reserved_and_audited_metrics_keep_distinct_meanings(self):
+        task = self.add(); binding = self.reserve(task)
+        worker = next(w for w in self.store.snapshot()['workers'] if w['id'] == self.worker)
+        projection = worker['event_dispatch']
+        self.assertIsNone(projection['latest_run']['blocker'])
+        self.assertEqual(projection['latest_run']['next_action'], 'Waiting for worker to claim this task')
+        self.assertIsNone(projection['metrics']['harness_failure_count'])
+        claim = self.store.claim(self.worker, task['id'], binding)
+        self.finish(claim, 'blocked')
+        with self.store.transaction() as db:
+            self.store.event(db, 'admin', 'approval-applied', task['id'], 'explicit unit audit fixture')
+        dispatch.settle(self.store, self.worker, {**self.settlement(binding, outcome='blocked'),
+                                                'failure_classification': 'harness'})
+        self.now += 91
+        worker = next(w for w in self.store.snapshot()['workers'] if w['id'] == self.worker)
+        projection = worker['event_dispatch']
+        self.assertEqual(projection['availability'], 'unknown'); self.assertTrue(projection['stale'])
+        self.assertEqual(projection['metrics']['harness_failure_count'], 1)
+        self.assertEqual(projection['metrics']['manual_approval_count'], 1)
+        self.assertEqual(projection['metrics']['manual_intervention_count'], 1)
+        self.assertIn('stale', projection['latest_run']['blocker'])
+
 
 if __name__ == '__main__':
     unittest.main()

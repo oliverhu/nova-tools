@@ -61,6 +61,11 @@ An optional `task_ids` list restricts initial qualification to exact existing pi
 tasks; an empty list admits none. A null/omitted filter uses normal eligibility.
 Pilot enrollment does not authorize waking unrelated queued tasks.
 
+The fixed `event-dispatch` client rollout profile retains its original three
+modules and immutable manifests. `event-dispatch-v2` additionally installs the
+qualified `cli_results.py` dependency. It does not migrate older manifests or
+replace unrelated admission/review modules.
+
 The worker reports its local availability through `/api/worker/dispatch/report`.
 The service also requires a fresh ordinary resource pulse, unpaused worker,
 matching requirements/capabilities, original task dependencies, attempt policy and
@@ -87,8 +92,9 @@ settlement/current time. First-test latency is claim to the first explicit
 cleanup phases are also explicit. Harness failure counts use an optional explicit
 `failure_classification: harness` in the owning report; unclassified results do
 not become zero failures. Manual approval count includes only audited
-`approval-applied` events for the worker's dispatched tasks. It is not a count of
-every possible human interaction. These observations never establish feature
+`approval-applied` events for the worker's dispatched tasks. The scoped manual
+intervention count also includes audited outcome/attempt correction and explicit
+operator reconciliation. Neither counts unrecorded human interactions. These observations never establish feature
 acceptance or a latency guarantee.
 
 The independent dashboard task retains actual UI acceptance and its Work Browser
