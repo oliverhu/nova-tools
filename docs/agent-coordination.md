@@ -517,3 +517,68 @@ Never remove the check or switch to an unreviewed route to conceal that limit.
 Actual delivery/readback qualification and source commits belong in private task
 receipts. Record installation separately from source integration; existing running
 supervisors keep their loaded implementation until their normal settled boundary.
+
+## Versioned CLI results and supervisor settlement
+
+New worker reports use `result_schema: 1`, exact `run_id`, `task`, integer
+`generation`, `worker`, explicit boolean `acceptance_complete`, and `outcome`:
+`completed`, `waiting`, `blocked`, or `pending_external_approval`. Their `cleanup`
+object records actual `execution_stopped`, `external_state_checked`, `input_settled`,
+`unknown_operations`, `unsettled_operations`, and descriptive `evidence`. Positive
+predicates and empty inventories require actual observations. Unknown effects stay
+explicit and unavailable. Use the same report as the service finish receipt;
+`waiting` instead retains the actual defer input in `wait-receipt.json`.
+
+After its exact child returns, the supervisor saves the observed exit, closes out
+live messages, and reduces original report/finish/readback against fresh API state.
+Version 1 separates acceptance from owned-process settlement and local availability.
+A verified successful final step becomes `completed`. An audited dependency/worker
+wait, known settled technical block, or settled approval wait becomes locally
+`settled`, with `completion_verified: false`. These states permit another eligible
+wake through the existing Dispatcher, worker lock, account B check and service
+admission. They never retry an approval, change counters/dependencies, claim work,
+start a model, or change the underlying task's outcome. `failed` denotes an unknown
+outcome and deliberately requires explicit reconciliation.
+
+`run-result.json` is an additive schema-1 typed result with original evidence
+hashes. The originals remain byte-for-byte unchanged. One compatibility boundary
+normalizes legacy reports only when explicit positive settlement evidence exists;
+missing legacy proof is never inferred. Existing exceptional historical settlement
+commands remain explicit and retain their original evidence rules. No historical
+receipt needs migration or rewriting.
+
+After a crash between the result journal and state commit, use
+`nova-cli-worker reconcile-result --run-id RUN` on the owning guest. It requires
+the latest run, the released worker lock, an actually observed child exit, matching
+run generation, immutable owner-only regular evidence, settled message closeout,
+and fresh matching API state. It recovers only the local result; it cannot settle
+an interrupted child with unknown exit, fabricate cleanup, accept a conflicting
+journal, or replay a task. Missing/contradictory evidence stays `needs_attention`.
+An orphaned `running` record without the live lock remains reconciliation-required.
+
+Install source separately at each guest's safe boundary, with exact before/after
+hashes and preserved rollback bytes. Do not restart the currently owning supervisor
+or lightweight reporter. A running supervisor retains its loaded implementation;
+new launches use the installed version. Keep saved-account, claim, privacy,
+approval and genuinely unknown-operation boundaries unchanged. Large-text checks
+are skipped by human policy.
+
+For the scoped lifecycle/messaging module rollout, run the following from the
+qualified source checkout on each guest (use a fresh private plan directory):
+
+```
+python3 scripts/rollout-cli-results.py plan --directory /absolute/private/plan
+python3 scripts/rollout-cli-results.py apply --directory /absolute/private/plan
+python3 scripts/rollout-cli-results.py rollback --directory /absolute/private/plan
+```
+
+The plan freezes original and candidate bytes for `cli_results`, `cli_messages`,
+`publication_ancestry`, `client` and `cli_dispatch`. These include the already
+qualified messaging source and its client dependency. Apply/rollback verify the
+exact guest/worker and all original/candidate hashes before touching installed
+modules. Interrupted installs can resume or roll back only when every module is
+still one of those exact two known versions; any unrelated change stops the flow.
+A plan/installed-hash receipt establishes installed bytes, not runtime acceptance.
+Run the contract suite through the actual guest shell and record the actual saved
+account, private configuration preservation and current-supervisor continuity.
+No service, schedule, skill, credential or admission setting changes are included.

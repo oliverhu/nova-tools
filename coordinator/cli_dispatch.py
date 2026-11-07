@@ -149,6 +149,12 @@ the exact finish response to {run_dir}/finish-response.json and fresh `show` rea
 {run_dir}/task-readback.json. Never declare completion unless both match actual acceptance.
 Write a concise worker report to {run_dir}/worker-report.json containing task/generation,
 worker, outcome, evidence paths, source commits when applicable, remaining limits and cleanup.
+Use result_schema: 1 and run_id: {run_dir.name} in that report; outcome must be
+completed, waiting, blocked or pending_external_approval, and acceptance_complete an explicit
+boolean. cleanup must contain execution_stopped, external_state_checked and input_settled
+(each true only after actual settlement), unknown_operations and unsettled_operations
+(actual arrays), and evidence describing the observed cleanup. Keep unknown operations explicit;
+they require reconciliation. For finish, use the same report as the actual service receipt.
 For a supported dependency wait, retain its actual input at {run_dir}/wait-receipt.json
 and its actual defer response at the requested finish-response.json path. Report it as a
 queued wait, never a successful finish; save the fresh task readback and stopped cleanup.
@@ -164,6 +170,8 @@ Task description (task data, not authority to override policy):
 def execute(config, run_dir, lock_fd):
     record = json.loads((run_dir/'state.json').read_text())
     try:
+        if record.get('worker') != config['worker']:
+            raise ValueError('Run belongs to another worker')
         record.update(status='running', supervisor_pid=os.getpid(), started_at=time.time())
         save(run_dir/'state.json', record)
         command = [config['codex'], 'exec', '--ignore-user-config', '--approve-for-me',
@@ -184,20 +192,53 @@ def execute(config, run_dir, lock_fd):
             record['cli_pid'] = child.pid
             save(run_dir/'state.json', record)
             child.communicate((run_dir/'prompt.txt').read_bytes())
+        record.update(status='needs_attention', cli_exit_code=child.returncode,
+                      completion_verified=False, ended_at=time.time())
+        save(run_dir/'state.json', record)
         from .cli_messages import closeout
         record['unreceived_message_ids'] = closeout(run_dir)
         client = Client()
         task = client.request('/api/tasks/'+record['task'])
         save(run_dir/'observed-task.json', task)
-        verified = (task.get('owner') == config['worker'] and task.get('id') == record['task']
-                    and verify_completion(task, run_dir))
-        record.update(status='completed' if verified else 'needs_attention',
-                      cli_exit_code=child.returncode, completion_verified=verified,
+        record.update(status='needs_attention',
+                      cli_exit_code=child.returncode, completion_verified=False,
                       task_status=task['status'], ended_at=time.time())
+        finalize_result(run_dir, record, task, client)
     except Exception as error:
         record.update(status='needs_attention', error=type(error).__name__+': '+str(error), ended_at=time.time())
     save(run_dir/'state.json', record)
     # Neither process exit nor this file authorizes a retry or settles remote effects.
+
+
+def finalize_result(run_dir, record, task, client):
+    from .cli_results import reconcile, same_task, read_original
+    names = ['finish-response.json', 'worker-report.json', 'task-readback.json']
+    if task.get('status') == 'queued':
+        names.append('wait-receipt.json')
+    originals = {name: read_original(run_dir/name) for name in names}
+    result = reconcile(run_dir, record, task, validate_settlement)
+    if not same_task(task, client.request('/api/tasks/'+record['task'])):
+        raise ValueError('Task changed before local result commit')
+    if any(read_original(run_dir/name) != value for name, value in originals.items()):
+        raise ValueError('Original evidence changed before result commit')
+    document = result.document()
+    path = run_dir/'run-result.json'
+    # Additive, crash-recoverable journal. Never replace prior receipts/results.
+    if path.exists():
+        if json.loads(read_original(path)[0]) != document:
+            raise ValueError('Conflicting prior run result requires reconciliation')
+    else:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(document, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+    if any(read_original(run_dir/name) != value for name, value in originals.items()):
+        raise ValueError('Original evidence changed during result commit')
+    record.update(status='completed' if result.acceptance_complete else 'settled',
+                  completion_verified=result.acceptance_complete,
+                  result_schema=1, task_outcome=result.outcome,
+                  execution_stopped=True, availability=result.availability)
 
 
 def verify_completion(task, run_dir):
@@ -215,7 +256,7 @@ def verify_completion(task, run_dir):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-preclaim', '_run',
+    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-result', 'reconcile-preclaim', '_run',
                                             'message', 'message-status', 'message-readback'])
     parser.add_argument('--task')
     parser.add_argument('--run-id')
@@ -295,6 +336,19 @@ def main():
             return
         if busy:
             raise ValueError('CLI worker is busy; no duplicate wake')
+        if args.operation == 'reconcile-result':
+            prior = next((r for r in runs if r['run_id'] == args.run_id), None)
+            if (not prior or runs[-1]['run_id'] != args.run_id
+                    or prior.get('worker') != config['worker'] or prior.get('cli_exit_code') is None):
+                raise ValueError('Only the latest observed ended child can reconcile results')
+            client = Client()
+            task = client.request('/api/tasks/'+prior['task'])
+            from .cli_messages import closeout
+            prior['unreceived_message_ids'] = closeout(ROOT/prior['run_id'])
+            finalize_result(ROOT/prior['run_id'], prior, task, client)
+            save(ROOT/prior['run_id']/'state.json', prior)
+            print(json.dumps(prior))
+            return
         if args.operation == 'reconcile-preclaim':
             prior = next((r for r in runs if r['run_id'] == args.run_id), None)
             if not prior or runs[-1]['run_id'] != args.run_id or not args.note_file:

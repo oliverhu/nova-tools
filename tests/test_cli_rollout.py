@@ -1,0 +1,48 @@
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+
+spec = importlib.util.spec_from_file_location('rollout', Path(__file__).resolve().parents[1]/'scripts/rollout-cli-results.py')
+rollout = importlib.util.module_from_spec(spec); spec.loader.exec_module(rollout)
+
+
+class RolloutTests(unittest.TestCase):
+    def test_exact_apply_partial_recovery_rollback_and_unknown_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); source = root/'source'; destination = root/'installed'
+            source.mkdir(); destination.mkdir()
+            for name in rollout.FILES: (source/name).write_text('value = 2\n')
+            (destination/'client.py').write_text('value = 1\n')
+            plan = root/'plan'; manifest = rollout.plan(source, destination, plan, 'mini')
+            originals = {p.name: p.read_bytes() for p in plan.iterdir()}
+            # Simulate interruption after dependency install. Only exact known
+            # before/after bytes are recoverable; third-party changes refuse.
+            (destination/rollout.FILES[0]).write_bytes((source/rollout.FILES[0]).read_bytes())
+            receipt = rollout.apply(plan, 'mini')
+            self.assertTrue(receipt['verified'])
+            rollout.apply(plan, 'mini')  # exact replay is harmless
+            for name in rollout.FILES: self.assertEqual((destination/name).read_bytes(), (source/name).read_bytes())
+            (destination/'client.py').write_text('foreign change\n')
+            with self.assertRaises(ValueError): rollout.apply(plan, 'mini', True)
+            self.assertTrue((destination/'cli_dispatch.py').exists())
+            (destination/'client.py').write_bytes((source/'client.py').read_bytes())
+            rollout.apply(plan, 'mini', True)
+            self.assertEqual((destination/'client.py').read_text(), 'value = 1\n')
+            self.assertEqual(list(destination.iterdir()), [destination/'client.py'])
+            for name, raw in originals.items(): self.assertEqual((plan/name).read_bytes(), raw)
+            with self.assertRaises(ValueError): rollout.apply(plan, 'foreign')
+
+    def test_modified_candidate_or_symlink_refuses_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); source = root/'source'; destination = root/'installed'
+            source.mkdir(); destination.mkdir()
+            for name in rollout.FILES: (source/name).write_text('pass\n')
+            plan = root/'plan'; rollout.plan(source, destination, plan, 'mini')
+            (plan/'cli_dispatch.py.after').write_text('changed\n')
+            with self.assertRaises(ValueError): rollout.apply(plan, 'mini')
+            self.assertEqual(list(destination.iterdir()), [])
+            (plan/'cli_dispatch.py.after').unlink()
+            (plan/'cli_dispatch.py.after').symlink_to(source/'cli_dispatch.py')
+            with self.assertRaises(ValueError): rollout.apply(plan, 'mini')
+            self.assertEqual(list(destination.iterdir()), [])
