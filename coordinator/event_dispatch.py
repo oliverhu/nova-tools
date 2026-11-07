@@ -272,7 +272,9 @@ def settle(store, worker, body):
 PRECLAIM_COMMON = {'state.json', 'worker-report.json', 'task-readback.json', 'tool-discovery.json',
                    'wake-reservation-response.json', 'model-spawn-intent.json', 'events.jsonl'}
 PRECLAIM_PROFILES = {'explicit-cleanup': PRECLAIM_COMMON | {'stopped-cleanup.json', 'readiness-check.json'},
-                     'noninvocation-marker': PRECLAIM_COMMON | {'finish-response.json', 'readiness.json'}}
+                     'noninvocation-marker': PRECLAIM_COMMON | {'finish-response.json', 'readiness.json'},
+                     'stopped-readiness-refusal': (PRECLAIM_COMMON - {'tool-discovery.json'}) |
+                         {'stopped-cleanup.json', 'readiness-preflight.json', 'actor-binding.json', 'instruction-readback.json'}}
 
 
 def settle_preclaim(store, worker, body):
