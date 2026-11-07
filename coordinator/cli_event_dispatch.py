@@ -223,12 +223,13 @@ def validate_preclaim_event(config, prior, documents, task, note):
     if (report.get('run_id') != run_id or report.get('task') != task['id'] or report.get('worker') != worker
             or type(report.get('generation')) is not int or report['generation'] != 0
             or report.get('outcome') != 'waiting' or report.get('acceptance_complete') is not False
-            or report.get('cleanup') != cleanup or not isinstance(report.get('summary'), str) or not report['summary'].strip()
+            or report.get('cleanup') != cleanup
             or not isinstance(cleanup.get('evidence'), list) or not cleanup['evidence']
             or not all(isinstance(e, str) and e.strip() for e in cleanup['evidence'])):
         raise ValueError('Original positive no-claim report/cleanup with incomplete acceptance required')
     if profile == 'explicit-cleanup':
         if (type(report.get('queued_generation')) is not int or report['queued_generation'] != 0
+                or not isinstance(report.get('summary'), str) or not report['summary'].strip()
                 or report.get('claim_attempted') is not False or report.get('service_receipt_submitted') is not False
                 or report.get('test_started') is not False or report.get('publication') is not False
                 or report.get('execution_stopped') is not True or report.get('external_state_checked') is not True):

@@ -79,6 +79,7 @@ class PreclaimTests(unittest.TestCase):
                 test_started=False, publication=False, execution_stopped=True, external_state_checked=True)
             save(directory/'stopped-cleanup.json', cleanup); save(directory/'readiness-check.json', {'claim_attempted': False})
         else:
+            report.pop('summary')  # The actual noninvocation report records its reason in the marker.
             report.update(claimed=False, service_status='queued')
             save(directory/'finish-response.json', {'run_id': self.run_id, 'task': self.task['id'], 'worker': self.worker,
                 'generation': 0, 'operation': 'not_invoked', 'service_response': None, 'service_finish_submitted': False,
