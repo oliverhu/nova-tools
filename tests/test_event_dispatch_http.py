@@ -38,8 +38,10 @@ class EventHTTPTests(unittest.TestCase):
     def test_read_only_dashboard_and_other_workers_cannot_operate_dispatch(self):
         for actor in (None, 'admin', 'oliverhu-mac-studio'):
             self.assertEqual(self.request('/api/worker/dispatch/next', actor, {'timeout': 0})[0], 403)
+            self.assertEqual(self.request('/api/worker/dispatch/preclaim-settle', actor, {})[0], 403)
         for actor in (None, self.worker, 'oliverhu-mac-studio'):
             self.assertEqual(self.request('/api/workers/'+self.worker+'/dispatch', actor, {})[0], 403)
+            self.assertEqual(self.request('/api/tasks/'+'f'*16+'/require-capabilities', actor, {})[0], 403)
         self.assertEqual(self.request('/api/worker/dispatch/next', self.worker,
                                      {'timeout': 0, 'private_prompt': 'must not upload'})[0], 400)
 

@@ -72,6 +72,48 @@ matching requirements/capabilities, original task dependencies, attempt policy a
 readiness revision. A fresh heartbeat alone never establishes local availability.
 Unknown or stale local state remains unavailable.
 
+An active worker lock produces a fresh typed busy report from this same
+subscriber. An unresolved local inventory produces unknown, never available.
+This keeps long runs observable without deriving local settlement from resource
+pulses, elapsed time or process absence.
+
+## Capability mismatches and stopped preclaim runs
+
+Requirements must represent the task's actual acceptance route. For example,
+built-in Browser tools in a guest CLI are distinct from CLI Playwright and desktop
+Browser tools. Missing capability is a technical scheduling constraint; it is not
+a fabricated approval or prerequisite. Administrators may add required capability
+names with `POST /api/tasks/ID/require-capabilities`, supplying an immutable request
+ID, exact generation/original requirements and stopped/checked evidence. The
+audited CAS only adds capabilities; it preserves description, hard worker,
+dependencies, receipts and counters. Active claims, approval states and unsettled
+claimed wakes refuse refinement. Both event selection and normal/fallback claims
+use the existing capability matching. This operation grants no capability; only
+actual independently qualified worker capacity can satisfy the new requirement.
+
+A model may correctly stop before claiming when preflight exposes a mismatch.
+Such a reserved wake cannot use an owning finish or claimed-wake acknowledgement.
+The explicit `reconcile-preclaim-event --run-id ID --note-file /private/note.json`
+operation supports two exact original-evidence profiles: a positive separate
+cleanup/report, or a positive report with a truthful local noninvocation marker.
+`--check-only` validates without changing admission or service state. The note
+binds all original file hashes, the inspected no-claim/no-finish facts and exact
+capability-disposition event. The service must independently show a never-owned
+generation-zero task and precisely submission, reservation and capability-audit
+history. Unknown effects, unread messages, real permission holds, actual finish
+responses, unexpected history or changed evidence refuse reconciliation.
+
+Run this qualified operation from an isolated source while the old installed
+readiness-pinned modules remain intact. It retains byte-exact original report,
+readback, logs and state backup; writes an additive stopped/incomplete settlement;
+and acknowledges only after releasing the worker lock and rechecking readiness.
+It neither claims nor finishes the task, increments attempts nor marks acceptance
+passed. A lost acknowledgement retains the reservation and owner-only immutable
+request for exact idempotent recovery, without replaying a model. Update installed
+clients/readiness only after this reservation is acknowledged and the worker is
+at its normal safe boundary. It is an explicit repair operation, not a new timer
+or automatic retry.
+
 Use the supported immutable-source deployment with an exact live ConfigMap and
 resource-version comparison. Preserve unrelated service changes and all dashboard
 files. Deploying source, installing clients, enrolling workers, actual dispatch
@@ -94,7 +136,9 @@ cleanup phases are also explicit. Harness failure counts use an optional explici
 not become zero failures. Manual approval count includes only audited
 `approval-applied` events for the worker's dispatched tasks. The scoped manual
 intervention count also includes audited outcome/attempt correction and explicit
-operator reconciliation. Neither counts unrecorded human interactions. These observations never establish feature
+operator reconciliation, capability refinement and preclaim reconciliation.
+Preclaim stops have their own count and are not completed feature samples.
+Neither counts unrecorded human interactions. These observations never establish feature
 acceptance or a latency guarantee.
 
 The independent dashboard task retains actual UI acceptance and its Work Browser

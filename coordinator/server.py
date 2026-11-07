@@ -117,6 +117,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            capability_task = re.fullmatch(r'/api/tasks/([0-9a-f]{16})/require-capabilities', path)
+            if capability_task:
+                if actor != 'admin':
+                    return self.respond(403, {'error': 'Capability refinement requires administrator identity'})
+                from . import event_dispatch
+                return self.respond(200, event_dispatch.require_capabilities(store, actor, capability_task[1], body))
             dispatch_config = re.fullmatch(r'/api/workers/([a-z0-9-]+)/dispatch', path)
             if dispatch_config:
                 if actor != 'admin':
@@ -135,6 +141,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(200, event_dispatch.next_candidate(store, actor, body['timeout']))
                 if operation in ('report', 'reserve', 'settle'):
                     return self.respond(200, getattr(event_dispatch, operation)(store, actor, body))
+                if operation == 'preclaim-settle':
+                    return self.respond(200, event_dispatch.settle_preclaim(store, actor, body))
                 return self.respond(404, {'error': 'Unknown dispatch operation'})
             if path == "/api/approval-links/apply":
                 if actor != "admin":

@@ -267,7 +267,7 @@ def verify_completion(task, run_dir):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-result', 'reconcile-preclaim', '_run',
+    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-result', 'reconcile-preclaim', 'reconcile-preclaim-event', '_run',
                                             'message', 'message-status', 'message-readback'])
     parser.add_argument('--task')
     parser.add_argument('--queued-generation', type=int,
@@ -282,8 +282,8 @@ def main():
     args = parser.parse_args()
     if args.event_triggered and args.operation != 'wake':
         parser.error('--event-triggered is supported only for exact-task wake')
-    if args.check_only and args.operation != 'settle':
-        parser.error('--check-only is supported only with settle')
+    if args.check_only and args.operation not in ('settle', 'reconcile-preclaim-event'):
+        parser.error('--check-only is supported only with settle or reconcile-preclaim-event')
     if args.expected_fingerprint is not None and (args.operation != 'settle' or not re.fullmatch('[0-9a-f]{64}', args.expected_fingerprint)):
         parser.error('--expected-fingerprint requires settle and an exact SHA-256 fingerprint')
     if args.check_only and args.expected_fingerprint is not None:
@@ -380,6 +380,14 @@ def main():
             if not prior or runs[-1]['run_id'] != args.run_id or not args.note_file:
                 raise ValueError('Preclaim reconciliation requires the latest run and an explicit cleanup note')
             reconcile_preclaim(ROOT, prior, args.note_file, config['worker'])
+            return
+        if args.operation == 'reconcile-preclaim-event':
+            prior = next((r for r in runs if r['run_id'] == args.run_id), None)
+            if not prior or runs[-1]['run_id'] != args.run_id or not args.note_file:
+                raise ValueError('Event preclaim reconciliation requires the latest run and an explicit exact-evidence note')
+            from .cli_event_dispatch import reconcile_preclaim_event
+            print(json.dumps(reconcile_preclaim_event(Client(), config, ROOT, prior, args.note_file,
+                                                     lock, check_only=args.check_only)))
             return
         if args.operation == 'settle':
             prior = next((r for r in runs if r['run_id'] == args.run_id), None)

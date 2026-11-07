@@ -7,6 +7,7 @@ the supervisor's typed settlement only after that lock is released.
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -17,6 +18,11 @@ import threading
 import time
 
 from .cli_results import read_original
+
+PRECLAIM_COMMON = {'state.json', 'worker-report.json', 'task-readback.json', 'tool-discovery.json',
+                   'wake-reservation-response.json', 'model-spawn-intent.json', 'events.jsonl'}
+PRECLAIM_PROFILES = {'explicit-cleanup': PRECLAIM_COMMON | {'stopped-cleanup.json', 'readiness-check.json'},
+                     'noninvocation-marker': PRECLAIM_COMMON | {'finish-response.json', 'readiness.json'}}
 
 
 def digest(raw):
@@ -166,6 +172,197 @@ def supervisor_settled(client, config, run_dir):
     save(run_dir/'event-settlement-response.json', response)
 
 
+def validate_preclaim_event(config, prior, documents, task, note):
+    """Compatibility for a truthful readiness stop, retaining every original.
+
+    This is deliberately narrower than normal result reconciliation: no task
+    was ever claimed, no finish exists, and one audited capability refinement
+    must be the only change since the worker's retained service readback.
+    """
+    report, old = (documents[n] for n in ('worker-report.json', 'task-readback.json'))
+    profile = note['evidence_profile']
+    cleanup = documents['stopped-cleanup.json'] if profile == 'explicit-cleanup' else report.get('cleanup', {})
+    run_id, worker = prior.get('run_id'), config['worker']
+    if (not isinstance(run_id, str) or len(run_id) != 32 or any(c not in '0123456789abcdef' for c in run_id)
+            or prior.get('worker') != worker or prior.get('task') != task.get('id')
+            or prior.get('status') != 'needs_attention' or prior.get('completion_verified') is not False
+            or type(prior.get('cli_exit_code')) is not int or prior['cli_exit_code'] != 0
+            or prior.get('unreceived_message_ids') != []
+            or any(type(prior.get(k)) is not int or prior[k] <= 0 for k in ('supervisor_pid', 'cli_pid'))
+            or any(type(prior.get(k)) not in (int, float) or not math.isfinite(prior[k]) or prior[k] <= 0
+                   for k in ('created_at', 'started_at', 'ended_at'))
+            or not prior['created_at'] <= prior['started_at'] <= prior['ended_at']
+            or type(prior.get('queued_generation')) is not int or prior['queued_generation'] != 0
+            or type(task.get('generation')) is not int or task['generation'] != 0 or task.get('step') != 0
+            or task.get('status') != 'queued' or task.get('owner') is not None or task.get('last_owner') is not None
+            or task.get('requirements', {}).get('worker') != worker
+            or task.get('result') != {} or task.get('receipts') != [] or task.get('approval') is not None
+            or any(type(task.get(k)) is not int or task[k] != 0
+                   for k in ('fix_attempts_used', 'total_fix_attempts', 'attempt_base', 'reassignment_count'))):
+        raise ValueError('Ended exact-worker run and unchanged never-owned generation-zero task required')
+    for key in ('id', 'title', 'description', 'steps', 'step', 'generation', 'status', 'owner', 'last_owner',
+                'dependencies', 'compute', 'priority', 'request_key', 'result', 'receipts', 'approval',
+                'fix_attempts_used', 'total_fix_attempts', 'attempt_base', 'reassignment_count'):
+        if key not in old or old[key] != task.get(key):
+            raise ValueError('Task acceptance, history or constraints changed beyond capability refinement')
+    original_events, events = old.get('events', []), task.get('events', [])
+    if (not isinstance(original_events, list) or [e.get('kind') for e in original_events] != ['submitted', 'wake-reserved']
+            or events[:-1] != original_events or len(events) != 3
+            or events[-1].get('kind') != 'task-capabilities-required' or events[-1].get('actor') != 'admin'
+            or events[-1].get('id') != note.get('capability_event_id')
+            or original_events[-1].get('actor') != worker):
+        raise ValueError('Only the exact reservation and one audited capability disposition may follow submission')
+    reserved = json.loads(original_events[-1]['detail']); disposition = json.loads(events[-1]['detail'])
+    if (reserved.get('wake_id') != run_id or reserved.get('run_id') != run_id
+            or reserved.get('task_id') != task['id'] or reserved.get('queued_generation') != 0
+            or reserved.get('readiness_revision') != config['event_dispatch']['readiness_revision']
+            or disposition.get('request', {}).get('generation') != 0
+            or disposition['request'].get('expected_requirements') != old.get('requirements')
+            or disposition.get('requirements') != task['requirements']):
+        raise ValueError('Reservation or capability disposition does not bind the original task')
+    if (report.get('run_id') != run_id or report.get('task') != task['id'] or report.get('worker') != worker
+            or type(report.get('generation')) is not int or report['generation'] != 0
+            or report.get('outcome') != 'waiting' or report.get('acceptance_complete') is not False
+            or report.get('cleanup') != cleanup or not isinstance(report.get('summary'), str) or not report['summary'].strip()
+            or not isinstance(cleanup.get('evidence'), list) or not cleanup['evidence']
+            or not all(isinstance(e, str) and e.strip() for e in cleanup['evidence'])):
+        raise ValueError('Original positive no-claim report/cleanup with incomplete acceptance required')
+    if profile == 'explicit-cleanup':
+        if (type(report.get('queued_generation')) is not int or report['queued_generation'] != 0
+                or report.get('claim_attempted') is not False or report.get('service_receipt_submitted') is not False
+                or report.get('test_started') is not False or report.get('publication') is not False
+                or report.get('execution_stopped') is not True or report.get('external_state_checked') is not True):
+            raise ValueError('Explicit-cleanup report lacks positive no-claim/no-receipt facts')
+    else:
+        marker = documents['finish-response.json']; ready = documents['readiness.json']
+        if (report.get('claimed') is not False or report.get('service_status') != 'queued'
+                or any(marker.get(k) != v for k, v in {'run_id': run_id, 'task': task['id'], 'generation': 0,
+                    'worker': worker, 'operation': 'not_invoked', 'service_response': None,
+                    'service_finish_submitted': False, 'service_defer_submitted': False,
+                    'observed_status': 'queued'}.items())
+                or not isinstance(marker.get('reason'), str) or not marker['reason'].strip()
+                or ready.get('claim_allowed') is not False or ready.get('tests_started') is not False
+                or ready.get('operations_launched') != []):
+            raise ValueError('Actual noninvocation marker and no-operation readiness required')
+    for value in (prior, report, cleanup, note):
+        if (value.get('human_stop') is True or value.get('approval_request')
+                or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []
+                or any(value.get(k) is False for k in ('execution_stopped', 'external_state_checked', 'input_settled'))):
+            raise ValueError('Unknown operations and real human/approval holds remain binding')
+    if (any(cleanup.get(k) is not True for k in ('execution_stopped', 'external_state_checked', 'input_settled'))
+            or cleanup.get('unknown_operations') != [] or cleanup.get('unsettled_operations') != []
+            or note.get('run_id') != run_id or note.get('task') != task['id'] or note.get('worker') != worker
+            or type(note.get('generation')) is not int or note['generation'] != 0
+            or any(note.get(k) is not True for k in ('execution_stopped', 'external_state_checked', 'input_settled'))
+            or any(note.get(k) != [] for k in ('unknown_operations', 'unsettled_operations'))
+            or note.get('claim_attempted') is not False or note.get('finish_attempted') is not False
+            or not isinstance(note.get('evidence'), str) or not note['evidence'].strip()):
+        raise ValueError('Positive exact-run cleanup and inspected no-claim/no-finish note required')
+    response = documents['wake-reservation-response.json']; intent = documents['model-spawn-intent.json']
+    if response != {'wake_id': run_id, 'status': 'reserved', 'duplicate': False} or intent != {'run_id': run_id, 'wake_id': run_id}:
+        raise ValueError('Original reservation/model intent differs')
+
+
+def reconcile_preclaim_event(client, config, root, prior, note_file, lock, check_only=False):
+    """Called with worker.lock held; release only after durable positive proof.
+
+    Run from a qualified isolated source when installed source is pinned by an
+    active reservation. It does not replace installed files or readiness pins.
+    A transport ambiguity reuses the immutable request, never a second model.
+    """
+    from .cli_dispatch import save
+    revision = readiness(config)
+    directory = root/prior['run_id']
+    request_path = directory/'preclaim-event-request.json'
+    audit_path = directory/'preclaim-reconciliation.json'
+    backup = directory/'preclaim-state-before.json'
+    note_raw = read_original(note_file)[0]; note = json.loads(note_raw)
+    selected = PRECLAIM_PROFILES.get(note.get('evidence_profile'))
+    if selected is None:
+        raise ValueError('An exact supported original-evidence profile is required')
+    recovery = request_path.exists()
+    if recovery:
+        body = json.loads(read_original(request_path)[0]); audit = json.loads(read_original(audit_path)[0])
+        original_state = read_original(backup)[0]
+        expected_state = {**json.loads(original_state), 'prior_status': 'needs_attention', 'status': 'settled',
+                          'execution_stopped': True, 'settlement_outcome': 'unclaimed_stopped'}
+        if (audit.get('note_sha256') != digest(note_raw) or prior != expected_state
+                or read_original(audit_path)[0] != read_original(directory/'dispatch-settlement.json')[0]
+                or body.get('result_sha256') != digest(read_original(directory/'dispatch-settlement.json')[0])
+                or body.get('readiness_revision') != revision or body.get('evidence_sha256') != note.get('evidence_sha256')):
+            raise ValueError('Prior preclaim reconciliation changed; preserve and inspect')
+    else:
+        original_state = read_original(directory/'state.json')[0]
+        if any((directory/n).exists() or (directory/n).is_symlink() for n in
+               (('finish-response.json',) if 'finish-response.json' not in selected else ()) +
+               ('wait-receipt.json', 'claim-response.json', 'run-result.json',
+                'dispatch-settlement.json', 'preclaim-state-before.json', 'preclaim-reconciliation.json')):
+            raise ValueError('Preserve existing finish/claim/result/settlement evidence; this route does not apply')
+        if json.loads(original_state) != prior:
+            raise ValueError('Preclaim state changed')
+    raw = {n: original_state if n == 'state.json' else read_original(directory/n)[0] for n in selected}
+    hashes = {n: digest(value) for n, value in raw.items()}
+    if hashes != note.get('evidence_sha256'):
+        raise ValueError('Original preclaim evidence differs from exact reviewed hashes')
+    authorization = json.loads(read_original(directory/'wake-authorization.json')[0])
+    if (set(authorization) != {'wake_id', 'run_id', 'token'} or authorization['wake_id'] != prior['run_id']
+            or authorization['run_id'] != prior['run_id']):
+        raise ValueError('Foreign private wake authorization')
+    if recovery:
+        if any(body.get(k) != v for k, v in authorization.items()):
+            raise ValueError('Immutable recovery request differs from private wake binding')
+    else:
+        documents = {n: json.loads(value) for n, value in raw.items() if n != 'events.jsonl'}
+        task = client.request('/api/tasks/'+prior['task'])
+        validate_preclaim_event(config, prior, documents, task, note)
+        messages = directory/'messages.json'
+        if messages.exists():
+            entries = json.loads(read_original(messages)[0]).get('messages')
+            if not isinstance(entries, list) or any(m.get('status') != 'readback' for m in entries):
+                raise ValueError('Unreceived messages prevent preclaim settlement')
+        if check_only:
+            return {'validated': True, 'run_id': prior['run_id'], 'service_or_admission_changed': False}
+        if any(read_original(directory/n)[0] != value for n, value in raw.items()):
+            raise ValueError('Original preclaim evidence changed during validation')
+        # Originals remain byte-exact. No finish or passing result is invented.
+        fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(original_state); stream.flush(); os.fsync(stream.fileno())
+        proof = {'schema': 1, 'operation': 'preclaim_event_stop', 'run_id': prior['run_id'], 'task': prior['task'],
+                 'worker': config['worker'], 'generation': 0, 'outcome': 'unclaimed_stopped', 'acceptance_complete': False,
+                 'availability': 'available', 'execution_stopped': True, 'external_state_checked': True,
+                 'input_settled': True, 'unknown_operations': [], 'unsettled_operations': [],
+                 'evidence_sha256': hashes, 'evidence_profile': note['evidence_profile'],
+                 'note_sha256': digest(note_raw), 'capability_event_id': note['capability_event_id']}
+        save(audit_path, proof)
+        save(directory/'dispatch-settlement.json', proof)
+        body = {**authorization, 'generation': 0, 'readiness_revision': revision,
+                'result_sha256': digest(read_original(directory/'dispatch-settlement.json')[0]),
+                'capability_event_id': note['capability_event_id'], 'evidence_sha256': hashes,
+                'evidence_profile': note['evidence_profile'],
+                'execution_stopped': True, 'external_state_checked': True, 'input_settled': True,
+                'local_lock_released': True, 'unknown_operations': [], 'unsettled_operations': [],
+                'unreceived_message_ids': [], 'claim_attempted': False, 'finish_attempted': False}
+        save(request_path, body)  # Owner-only journal contains the private token.
+        save(directory/'state.json', {**prior, 'prior_status': prior['status'], 'status': 'settled',
+             'execution_stopped': True, 'settlement_outcome': 'unclaimed_stopped'})
+    if check_only:
+        return {'validated': True, 'run_id': prior['run_id'], 'service_or_admission_changed': False}
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    # Independently verify the old lock really is released before acknowledging.
+    with (root/'worker.lock').open('r') as probe:
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Worker lock was reacquired; retain reservation') from None
+    readiness(config)
+    response = client.request('/api/worker/dispatch/preclaim-settle', body)
+    if response.get('settled') is not True or response.get('outcome') != 'unclaimed_stopped':
+        raise ValueError('Preclaim settlement not acknowledged; retain immutable request')
+    save(directory/'event-settlement-response.json', response)
+    return {'settled': True, 'run_id': prior['run_id'], 'outcome': 'unclaimed_stopped', 'acceptance_complete': False}
+
+
 def listen(client, config, root, stop):
     """One subscriber in the existing reporter; blocked waits use no model."""
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -181,6 +378,7 @@ def listen(client, config, root, stop):
                         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
                         available = False
+                        report_locked(client, config, root, False)
                     else:
                         available = True
                     if available:
@@ -188,6 +386,9 @@ def listen(client, config, root, stop):
                         # a duplicate availability report must not clear them.
                         try:
                             report_locked(client, config, root, True)
+                        except (ValueError, OSError):
+                            available = False
+                            report_locked(client, config, root, None, issue='local_admission_unresolved')
                         except Exception:
                             available = False
                 candidate = client.request('/api/worker/dispatch/next', {'timeout': 10})
