@@ -351,6 +351,8 @@ def main():
             if task.get('status') == 'queued' and finish.get('status') == 'pending_external_approval':
                 if runs[-1]['run_id'] != prior['run_id']:
                     raise ValueError('A later local run exists; do not settle historical approval work')
+                if isinstance(cleanup_proof, dict) and Client().request('/api/tasks/'+prior['task']) != task:
+                    raise ValueError('Unsigned approval task changed before local settlement')
                 settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback, cleanup_proof=cleanup_proof, check_only=args.check_only)
                 print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': True,
                                   **({'check_only': True, 'settled_for_other_work': False, 'settlement_ready': True} if args.check_only else {}),
@@ -568,6 +570,10 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
            for k in immutable) or readback.get('receipts') != task.get('receipts'):
         raise ValueError('Original target, constraints, counters and receipt history must remain unchanged')
     result = task.get('result'); cleanup = report.get('cleanup'); cleanup_proof = None
+    if note.get('unsigned_preparation_approval') is not None:
+        from .cli_unsigned_wait import validate
+        cleanup_proof = validate(ROOT, run, task, finish, report, readback, note, worker, read_cleanup_proof)
+        cleanup = result['cleanup']
     if isinstance(cleanup, dict) and isinstance(result.get('cleanup'), str):
         path = ROOT/run['run_id']/'stopped-cleanup.json'
         if (result['cleanup'] != str(path) or not isinstance(report.get('evidence_paths'), list)
@@ -598,7 +604,7 @@ def validate_approved_wait(run, task, finish, report, readback, note, worker):
         cleanup_proof = (path, raw, identity)
     if (not isinstance(result, dict) or not isinstance(cleanup, dict)
             or result.get('acceptance_complete') is not False
-            or report.get('summary') != result.get('summary')
+            or (not isinstance(cleanup_proof, dict) and report.get('summary') != result.get('summary'))
             or (cleanup_proof is None and 'cleanup' in result and result['cleanup'] != cleanup)
             or any(value.get(k) is not True for value in (result, cleanup)
                    for k in ('execution_stopped', 'external_state_checked'))):
@@ -680,7 +686,11 @@ def settle_approved_wait(run_dir, prior, note, finish, report, readback, operati
     originals = {p: p.read_bytes() for p in paths}
     if any(json.loads(originals[p]) != value for p, value in zip(paths, values)):
         raise ValueError('Original approval evidence changed before settlement')
-    if cleanup_proof is not None:
+    if isinstance(cleanup_proof, dict):
+        if any(read_cleanup_proof(p) != value for p, value in cleanup_proof['snapshots'].items()):
+            raise ValueError('Unsigned-wait original evidence changed after validation')
+        originals.update({p: value[0] for p, value in cleanup_proof['snapshots'].items()})
+    elif cleanup_proof is not None:
         path, raw, identity = cleanup_proof
         if path != run_dir/'stopped-cleanup.json' or read_cleanup_proof(path) != (raw, identity):
             raise ValueError('Cleanup proof changed or was replaced after validation')
@@ -703,7 +713,9 @@ def settle_approved_wait(run_dir, prior, note, finish, report, readback, operati
             stream.write(raw); stream.flush(); os.fsync(stream.fileno())
     if any(p.read_bytes() != raw for p, raw in originals.items()):
         raise ValueError('Original approval evidence changed during settlement; reconcile audit before retry')
-    if cleanup_proof is not None and read_cleanup_proof(cleanup_proof[0]) != cleanup_proof[1:]:
+    if isinstance(cleanup_proof, dict) and any(read_cleanup_proof(p) != value for p, value in cleanup_proof['snapshots'].items()):
+        raise ValueError('Unsigned-wait evidence replaced during settlement; reconcile audit before retry')
+    if isinstance(cleanup_proof, tuple) and read_cleanup_proof(cleanup_proof[0]) != cleanup_proof[1:]:
         raise ValueError('Cleanup proof replaced during settlement; reconcile audit before retry')
     if owner_review is not None and any(read_cleanup_proof(p) != value for p, value in owner_review['snapshots'].items()):
         raise ValueError('Owner-reviewed evidence changed during settlement; reconcile audit before retry')

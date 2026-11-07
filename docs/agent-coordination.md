@@ -438,3 +438,20 @@ ordinary approval. A matching replay returns the original link and current task
 without requeuing a later claim. The task's result, receipts, dependencies and
 counters stay intact; an `approval-applied` event includes `question_link` evidence.
 The link records reported approval, not OS predicate or runtime qualification.
+
+An ended approval wait with a compact owner cleanup and a distinct summary can
+use the unsigned-preparation evidence binding in its explicit settlement note:
+`unsigned_preparation_approval` must equal the fresh API approval evidence and
+its exact scope must permit only fresh separate guarded unsigned test preparation
+under normal review. This narrow path reads canonical nonsymlink same-run
+`finish-receipt.json`, `stopped-cleanup.json` and `approval-rejection.json` along
+with the original run/report/finish/readback. It requires matching full cleanup,
+positive stopped/reaped/checked evidence, unchanged original pins/signature and
+no signing, staging execution, bundle change, input or permission probe. Existing
+approval identity/history checks still apply. All seven original hashes and file
+identities are rechecked before settlement; the API is read again under the
+existing worker lock. Both summaries and the original rejection remain verbatim.
+Use the supported `settle --check-only` followed by `settle` on the owning guest.
+Only local admission is settled. The original owner must submit a distinct unsigned
+plan through normal review and stop on denial; signing/install/launch and rejected
+command retry remain forbidden. An offline packet check cannot settle that guest.
