@@ -150,6 +150,17 @@ generation and worker, and the same positive stopped/checked and unknown-operati
 guards. It uses the same file identity/hash rechecks and preserves the original
 result path and report object without rewriting either.
 
+A worker-only handoff is a separate supported wait shape: the original owner
+remains in the run, report and `last_owner`, while the original wait input's
+`worker` names the distinct destination required by the fresh queued task.
+Dependencies must be empty (the original input may omit that key). Settlement
+requires the exact original finish and full readback, unchanged receipts/events
+and counters, the owning claim followed by its stopped/checked waiting audit,
+and positive cleanup with no unknown effects or independent approval holds.
+The same check-only/apply commands preserve all original bytes, back up the old
+state as `worker-only-wait-state-before.json` and append a local settlement audit.
+They neither manufacture dependencies nor claim or wake the destination worker.
+
 Use `nova-cli-worker settle --run-id ID --note-file /absolute/note.json --check-only`
 to check the existing evidence before attempting settlement. It uses the same
 lock and validators, reads the current API, and reports `settlement_ready` without

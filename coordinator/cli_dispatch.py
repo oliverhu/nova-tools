@@ -303,7 +303,7 @@ def main():
                 proof = json.loads(proof_path.read_text())
                 if unclaimed or approved: readback = proof
                 else: wait_receipt = proof
-                if not unclaimed and not approved and (task.get('dependencies') != finish.get('dependencies') or note.get('owner_review') is not None):
+                if not unclaimed and not approved and (task.get('dependencies') != finish.get('dependencies') or note.get('owner_review') is not None or task.get('dependencies') == []):
                     path = run_dir/'task-readback.json'
                     if not path.is_file() or path.resolve() != path:
                         raise ValueError('Original canonical wait readback required')
@@ -328,6 +328,16 @@ def main():
                                   'settlement_fingerprint': fingerprint,
                                   **({'check_only': True, 'settled_for_other_work': False, 'settlement_ready': True} if args.check_only else {}),
                                   'settlement_outcome': 'failed', 'task_status_unchanged': task['status']}))
+                return
+            if (wait_receipt is not None and task.get('dependencies') == []
+                    and finish.get('dependencies') == []):
+                if runs[-1]['run_id'] != prior['run_id']:
+                    raise ValueError('Later local run prevents worker-only handoff settlement')
+                settle_approved_wait(ROOT/prior['run_id'], prior, note, finish, report, readback,
+                                     operation='worker_only_wait', wait_receipt=wait_receipt, check_only=args.check_only)
+                print(json.dumps({'run_id': prior['run_id'], 'settled_for_other_work': not args.check_only,
+                                  **({'check_only': True, 'settlement_ready': True} if args.check_only else {}),
+                                  'task_status_unchanged': task['status']}))
                 return
             if wait_receipt is not None and task.get('dependencies') != finish.get('dependencies'):
                 if runs[-1]['run_id'] != prior['run_id']:
@@ -493,6 +503,8 @@ def validate_settlement(run, task, finish, note, worker, report=None, wait_recei
         else:
             if task.get('dependencies') != finish.get('dependencies'):
                 validate_audited_wait(run, task, finish, report, wait_receipt, readback, note, worker)
+            elif task.get('dependencies') == []:
+                validate_worker_only_wait(run, task, finish, report, wait_receipt, readback, note, worker)
             else:
                 validate_queued_wait(run, task, finish, report, wait_receipt, worker)
     elif (task.get('status') not in ('blocked', 'failed', 'pending_external_approval')
@@ -658,7 +670,7 @@ def settle_approved_wait(run_dir, prior, note, finish, report, readback, operati
     backup = run_dir/(operation.replace('_', '-')+'-state-before.json'); audit = run_dir/'dispatch-settlement.json'
     values = [prior, finish, report, readback]
     forbidden = []
-    if operation in ('audited_wait', 'owner_reviewed_failed_wait'):
+    if operation in ('audited_wait', 'owner_reviewed_failed_wait', 'worker_only_wait'):
         paths.append(run_dir/'wait-receipt.json'); values.append(wait_receipt)
     else:
         forbidden.append(run_dir/'wait-receipt.json')
@@ -866,6 +878,88 @@ def validate_audited_wait(run, task, response, report, wait_receipt, readback, n
             or detail['worker'] != worker or detail['dependencies'] != task['dependencies']
             or not isinstance(detail['evidence'], str) or not detail['evidence'].strip()):
         raise ValueError('Exact authenticated admin waiting disposition required')
+
+
+def validate_worker_only_wait(run, task, response, report, wait_receipt, readback, note, worker):
+    """A worker-only defer names a destination, never a replacement original owner."""
+    if any(not isinstance(v, dict) for v in (run, task, response, report, wait_receipt, readback, note)):
+        raise ValueError('Original worker-only handoff evidence and readback required')
+    requirements = task.get('requirements')
+    destination = requirements.get('worker') if isinstance(requirements, dict) else None
+    if (not isinstance(destination, str) or not destination.strip() or destination == worker
+            or task.get('dependencies') != [] or task.get('status') != 'queued'
+            or task.get('owner') is not None or task.get('last_owner') != worker
+            or type(task.get('generation')) is not int or task['generation'] < 1
+            or type(task.get('step')) is not int or task['step'] < 0
+            or task.get('result') != {} or task.get('approval') is not None
+            or run.get('task') != task.get('id') or run.get('worker') != worker
+            or not re.fullmatch('[a-f0-9]{32}', run.get('run_id', ''))
+            or run.get('status') != 'needs_attention' or run.get('completion_verified') is not False
+            or type(run.get('cli_exit_code')) is not int or run['cli_exit_code'] != 0
+            or type(run.get('queued_generation')) is not int
+            or run['queued_generation'] != task['generation'] - 1
+            or any(type(run.get(k)) not in (int, float) or not math.isfinite(run[k]) or run[k] <= 0
+                   for k in ('created_at', 'started_at', 'ended_at'))
+            or not run['created_at'] <= run['started_at'] <= run['ended_at']):
+        raise ValueError('Exact ended owning run and unowned worker-only destination required')
+    keys = ('id', 'generation', 'step', 'status', 'owner', 'last_owner', 'requirements', 'dependencies',
+            'result', 'fix_attempts_used', 'total_fix_attempts', 'attempts_host', 'attempt_base',
+            'reassignment_count', 'attempt_exception', 'attempt_allowance', 'steps', 'request_key')
+    if (any(k not in response or response[k] != task.get(k) for k in keys)
+            or any(k not in readback or readback[k] != task.get(k)
+                   for k in (*keys, 'receipts', 'events', 'approval'))):
+        raise ValueError('Fresh API must preserve original worker-only handoff and all history')
+    cleanup = report.get('cleanup', {})
+    if not isinstance(cleanup, dict):
+        raise ValueError('Original owning cleanup report required')
+    for value in (run, task, report, cleanup, wait_receipt, note, response, readback):
+        if (value.get('human_stop') is True or value.get('approval_request')
+                or value.get('unknown_operations', []) != [] or value.get('unsettled_operations', []) != []
+                or value.get('acceptance_complete') is True
+                or any(k in value and value[k] is not True
+                       for k in ('execution_stopped', 'external_state_checked', 'input_settled'))):
+            raise ValueError('Contradictory cleanup, unknown effects or independent holds prevent handoff settlement')
+    if (report.get('task') != task['id'] or report.get('generation') != task['generation']
+            or report.get('worker', report.get('worker_id')) != worker
+            or ('worker_id' in report and report['worker_id'] != worker)
+            or report.get('outcome') not in ('queued', 'waiting', 'queued_wait')
+            or any(report.get(k) is not True and cleanup.get(k) is not True
+                   for k in ('execution_stopped', 'external_state_checked'))
+            or any(k in cleanup and cleanup[k] != v for k, v in
+                   (('task', task['id']), ('generation', task['generation']), ('worker', worker)))
+            or ('next_worker' in report and report['next_worker'] != destination)
+            or wait_receipt.get('task') != task['id'] or wait_receipt.get('generation') != task['generation']
+            or wait_receipt.get('worker') != destination
+            or ('worker_id' in wait_receipt and wait_receipt['worker_id'] != worker)
+            or wait_receipt.get('dependencies', []) != []
+            or ('outcome' in wait_receipt and wait_receipt['outcome'] not in ('queued', 'waiting', 'queued_wait'))
+            or any(wait_receipt.get(k) is not True for k in ('execution_stopped', 'external_state_checked'))
+            or not isinstance(wait_receipt.get('evidence'), str) or not wait_receipt['evidence'].strip()):
+        raise ValueError('Original owner report and distinct destination wait input must match')
+    receipts, events = task.get('receipts'), task.get('events')
+    if not isinstance(receipts, list) or not receipts or not isinstance(events, list) or len(events) < 2:
+        raise ValueError('Owning claim and waiting receipt/audit required')
+    receipt = receipts[-1]; claim, event = events[-2:]
+    if any(not isinstance(v, dict) for v in (receipt, claim, event)):
+        raise ValueError('Structured original handoff records required')
+    envelope = receipt.get('receipt', {}); body = envelope.get('receipt', {}) if isinstance(envelope, dict) else {}
+    try:
+        detail = json.loads(event.get('detail', ''))
+    except (ValueError, TypeError):
+        raise ValueError('Exact original waiting audit JSON required') from None
+    if (not isinstance(body, dict) or not isinstance(envelope, dict)
+            or receipt.get('task_id') != task['id'] or receipt.get('generation') != task['generation']
+            or receipt.get('step') != task['step'] or envelope.get('outcome') != 'waiting'
+            or body != {'summary': wait_receipt['evidence'],
+                        'execution_stopped': True, 'external_state_checked': True}
+            or claim.get('kind') != 'claimed' or event.get('kind') != 'waiting'
+            or any(e.get('actor') != worker or e.get('task_id') != task['id'] for e in (claim, event))
+            or any(type(e.get('id')) is not int for e in (claim, event)) or claim['id'] >= event['id']
+            or any(type(e.get('at')) not in (int, float) or not math.isfinite(e['at'])
+                   for e in (claim, receipt, event))
+            or not run['started_at'] <= claim['at'] <= receipt['at'] <= event['at'] <= run['ended_at']
+            or detail != {'worker': destination, 'dependencies': [], 'evidence': wait_receipt['evidence']}):
+        raise ValueError('Exact owning claim, stopped waiting receipt and destination audit required')
 
 
 def validate_queued_wait(run, task, response, report, wait_receipt, worker, owner_closure=None):
