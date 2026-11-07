@@ -394,8 +394,10 @@ class Store:
         workers = db.execute("""SELECT * FROM workers WHERE paused=0 AND seen>? AND id NOT IN
             (SELECT owner FROM tasks WHERE status IN ('running','held') AND owner IS NOT NULL)""", (self.clock()-90,)).fetchall()
         from .session_epochs import admit
+        from .app_sessions import readiness_reason
         workers = [w for w in workers if self.fits(task, w) and self.assignment_allowed(task, w['id'])
                    and not task_readiness.view(self, db, task, w['id'])['reason']
+                   and not readiness_reason(self, db, w['id'], task)
                    and admit(self, db, w['id'], self.public_task(task))]
         if not workers:
             return None
@@ -427,9 +429,11 @@ class Store:
         return workers[0]["id"]
 
     def available_owner(self, db, task):
+        from .app_sessions import readiness_reason
         previous = db.execute("SELECT * FROM workers WHERE id=? AND paused=0 AND seen>?",
                               (task["owner"], self.clock()-90)).fetchone()
-        return previous if previous and self.fits(task, previous) and self.assignment_allowed(task,previous['id']) else None
+        return previous if (previous and self.fits(task, previous) and self.assignment_allowed(task,previous['id'])
+                            and not readiness_reason(self, db, previous['id'], task)) else None
 
     def assignment_allowed(self, task, worker):
         if task['attempts_host'] and task['attempts_host'] != worker:

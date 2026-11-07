@@ -166,23 +166,37 @@ def qualify(store, actor, worker, body):
         return {'qualified': True, 'session_id': row['session_id'], 'epoch': row['epoch']}
 
 
+def readiness_reason(store, db, worker, task=None):
+    current = policy(db, worker)
+    if not current: return ''
+    if not current['enabled']: return 'App worker is disabled'
+    row = db.execute('SELECT * FROM app_worker_sessions WHERE worker=?', (worker,)).fetchone()
+    if not row: return 'App session is not enrolled'
+    adopted = json.loads(row['adopted']) if row['adopted'] else {}
+    qualification = json.loads(row['qualification']) if row['qualification'] else {}
+    if (adopted.get('policy_revision') != current['revision']
+            or adopted.get('source_commit') != current['source_commit']
+            or adopted.get('inventory_sha256') != current['inventory_sha256']):
+        return 'Current instruction adoption required'
+    if (qualification.get('policy_revision') != current['revision']
+            or qualification.get('valid_until', 0) <= store.clock()):
+        return 'Current app readiness qualification required'
+    required = {'development'}
+    if task is not None:
+        required.update(json.loads(task['requirements']).get('capabilities', []))
+    if not required <= set(qualification['capabilities']):
+        return 'App session lacks required qualified capability'
+    return ''
+
+
 def ready(store, db, worker, binding, task=None):
     current = policy(db, worker)
     if not current:
         need(binding is None, 'App session is not enrolled', True)
         return None
-    need(current['enabled'], 'App worker is disabled', True)
     row = authenticate(db, worker, binding)
-    adopted = json.loads(row['adopted']) if row['adopted'] else {}
-    qualification = json.loads(row['qualification']) if row['qualification'] else {}
-    need(adopted.get('policy_revision') == current['revision']
-         and adopted.get('source_commit') == current['source_commit']
-         and adopted.get('inventory_sha256') == current['inventory_sha256'], 'Current instruction adoption required', True)
-    need(qualification.get('policy_revision') == current['revision']
-         and qualification.get('valid_until', 0) > store.clock(), 'Current app readiness qualification required', True)
-    if task is not None:
-        required = set(json.loads(task['requirements']).get('capabilities', [])) | {'development'}
-        need(required <= set(qualification['capabilities']), 'App session lacks required qualified capability', True)
+    reason = readiness_reason(store, db, worker, task)
+    need(not reason, reason, True)
     return row
 
 
@@ -211,7 +225,7 @@ def status(store, worker):
     need(worker in WORKERS, 'Enrolled worker required')
     with store.connection() as db:
         row = db.execute('SELECT * FROM app_worker_sessions WHERE worker=?', (worker,)).fetchone()
-        return {'worker': worker, 'policy': policy(db, worker), 'session': None if not row else {
+        return {'worker': worker, 'policy': policy(db, worker), 'readiness_reason': readiness_reason(store, db, worker), 'session': None if not row else {
             'session_id': row['session_id'], 'epoch': row['epoch'], 'registration': json.loads(row['registration']),
             'adopted': json.loads(row['adopted']) if row['adopted'] else None,
             'qualification': json.loads(row['qualification']) if row['qualification'] else None}}

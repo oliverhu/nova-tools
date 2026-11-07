@@ -68,6 +68,7 @@ class AppSessionTests(unittest.TestCase):
     def test_missing_capability_prevents_claim(self):
         task = self.task(capabilities=['gui'])
         self.assertIsNone(self.claim(task)['task'])
+        self.assertFalse(self.store.detail(task['id'])['ready'])
         self.qualify(['development', 'gui'])
         self.assertIsNotNone(self.claim(task)['task'])
 
