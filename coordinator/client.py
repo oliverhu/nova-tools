@@ -112,7 +112,15 @@ class Client:
             self.pulse()
         except LocalResourceDenied:
             resource_readiness = self.require_fresh_reporter()
-        result=self.request("/api/worker/claim",{"task_id":ident})
+        body = {"task_id": ident}
+        from .workers import MINI_VM_WORKERS
+        if getattr(self, 'config', {}).get('worker') in MINI_VM_WORKERS:
+            from .cli_messages import own_run, ROOT
+            from .cli_event_dispatch import claim_binding
+            binding = claim_binding(ROOT, own_run(ROOT))
+            if binding is not None:
+                body['dispatch_binding'] = binding
+        result=self.request("/api/worker/claim",body)
         if resource_readiness:result['resource_readiness']=resource_readiness
         if recovered:result['approval_recovery']=recovered
         if result.get("task"):
@@ -126,10 +134,12 @@ class Client:
         value=json.loads((self.state/(ident+".json")).read_text())
         return {"claim_token":value["claim_token"],"generation":value["task"]["generation"],"step":value["task"]["step"]}
 
-    def heartbeat(self,ident,progress=None):
+    def heartbeat(self,ident,progress=None,phase=None):
         body=self.claim_body(ident)
         if progress is not None:
             body["progress"]=progress
+        if phase is not None:
+            body['phase'] = phase
         return self.request(f"/api/tasks/{ident}/heartbeat",body)
 
     def finish(self,ident,receipt,outcome=None):
@@ -319,6 +329,7 @@ def main():
     claim=sub.add_parser("next");claim.add_argument("--task")
     detail=sub.add_parser("show");detail.add_argument("task")
     beat=sub.add_parser("heartbeat");beat.add_argument("task");beat.add_argument("--progress")
+    beat.add_argument('--phase', choices=('implementing', 'testing', 'cleanup'))
     done=sub.add_parser("finish");done.add_argument("task");done.add_argument("--receipt",type=Path,required=True);done.add_argument("--outcome",choices=FINISH_OUTCOMES,help="Defaults to the explicit receipt outcome, otherwise completed; contradictions are rejected")
     run=sub.add_parser("run");run.add_argument("task");run.add_argument("args",nargs=argparse.REMAINDER)
     publish=sub.add_parser("publish");publish.add_argument("task");publish.add_argument("--receipt",type=Path,required=True);publish.add_argument("--command",dest="publish_command",nargs=argparse.REMAINDER,required=True)
@@ -360,7 +371,7 @@ def main():
         if result.get("task"):
             result["task"]=client.request("/api/tasks/"+result["task"]["id"])
     elif args.command=="heartbeat":
-        result=client.heartbeat(args.task,args.progress)
+        result=client.heartbeat(args.task,args.progress,phase=args.phase)
         message=cli_followup(client,args.task)
         if message is not None:result['cli_followup']=message
     elif args.command=="finish":result=client.finish(args.task,json.loads(args.receipt.read_text()),args.outcome)
@@ -424,7 +435,10 @@ def main():
         from .gateway import serve
         serve(client,args.port);return
     elif args.command=="agent":
-        # Capacity/inbox polling uses no language model and makes no peer calls.
+        # Keep the existing capacity/inbox schedule. An explicitly enrolled Mini
+        # also has one event subscriber; it uses the normal fenced CLI launcher.
+        from .cli_event_dispatch import start_listener
+        start_listener(client)
         last_observation=0
         while True:
             try:

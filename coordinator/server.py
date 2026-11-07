@@ -117,6 +117,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,store.detail(match[1]))
         if self.command=="POST":
             body=self.body()
+            dispatch_config = re.fullmatch(r'/api/workers/([a-z0-9-]+)/dispatch', path)
+            if dispatch_config:
+                if actor != 'admin':
+                    return self.respond(403, {'error': 'Dispatch enrollment requires administrator identity'})
+                from . import event_dispatch
+                return self.respond(200, event_dispatch.configure(store, actor, dispatch_config[1], body))
+            if path.startswith('/api/worker/dispatch/'):
+                from . import event_dispatch
+                from .workers import MINI_VM_WORKERS
+                if actor not in MINI_VM_WORKERS:
+                    return self.respond(403, {'error': 'Enrolled Mini worker identity required'})
+                operation = path.rsplit('/', 1)[-1]
+                if operation == 'next':
+                    if set(body) != {'timeout'}:
+                        raise Invalid('Only the bounded event-wait timeout is accepted')
+                    return self.respond(200, event_dispatch.next_candidate(store, actor, body['timeout']))
+                if operation in ('report', 'reserve', 'settle'):
+                    return self.respond(200, getattr(event_dispatch, operation)(store, actor, body))
+                return self.respond(404, {'error': 'Unknown dispatch operation'})
             if path == "/api/approval-links/apply":
                 if actor != "admin":
                     return self.respond(403, {"error": "Question linkage requires administrator identity"})
@@ -174,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/api/worker/pulse","/api/worker/claim"):
                 if actor not in WORKERS:
                     return self.respond(403,{"error":"Use a worker identity"})
-                result=store.pulse(actor,body) if path.endswith("pulse") else store.claim(actor,body.get("task_id"))
+                result=store.pulse(actor,body) if path.endswith("pulse") else store.claim(actor,body.get("task_id"),body.get('dispatch_binding'))
                 return self.respond(200,result)
             match=re.fullmatch(r"/api/tasks/([0-9a-f]{16})/(heartbeat|finish|reconcile|retry|defer|correct-outcome|correct-attempts)",path)
             if match:

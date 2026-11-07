@@ -155,6 +155,8 @@ boolean. cleanup must contain execution_stopped, external_state_checked and inpu
 (each true only after actual settlement), unknown_operations and unsettled_operations
 (actual arrays), and evidence describing the observed cleanup. Keep unknown operations explicit;
 they require reconciliation. For finish, use the same report as the actual service receipt.
+Before the first actual test, report its start with `nova-coord heartbeat {task['id']} --phase testing`.
+Use --phase implementing or --phase cleanup for those actual transitions; do not invent test timings.
 For a supported dependency wait, retain its actual input at {run_dir}/wait-receipt.json
 and its actual defer response at the requested finish-response.json path. Report it as a
 queued wait, never a successful finish; save the fresh task readback and stopped cleanup.
@@ -259,12 +261,18 @@ def main():
     parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-result', 'reconcile-preclaim', '_run',
                                             'message', 'message-status', 'message-readback'])
     parser.add_argument('--task')
+    parser.add_argument('--queued-generation', type=int,
+                        help='Exact generation from event/fallback selection; stale wakes refuse')
+    parser.add_argument('--event-triggered', action='store_true',
+                        help='Report a preflight busy/stale race without starting another model')
     parser.add_argument('--run-id')
     parser.add_argument('--lock-fd', type=int)
     parser.add_argument('--note-file', type=Path)
     parser.add_argument('--check-only', action='store_true', help='Validate settle evidence without changing local admission or service state')
     parser.add_argument('--expected-fingerprint', help='Exact fingerprint returned by settlement check-only')
     args = parser.parse_args()
+    if args.event_triggered and args.operation != 'wake':
+        parser.error('--event-triggered is supported only for exact-task wake')
     if args.check_only and args.operation != 'settle':
         parser.error('--check-only is supported only with settle')
     if args.expected_fingerprint is not None and (args.operation != 'settle' or not re.fullmatch('[0-9a-f]{64}', args.expected_fingerprint)):
@@ -299,6 +307,12 @@ def main():
             raise ValueError('Invalid internal run')
         os.fstat(args.lock_fd)
         execute(config, ROOT/args.run_id, args.lock_fd)
+        # Only the reaped child/result/message-closeout path can ACK a wake.
+        # Release this supervisor's inherited lock before advertising capacity.
+        fcntl.flock(args.lock_fd, fcntl.LOCK_UN)
+        os.close(args.lock_fd)
+        from .cli_event_dispatch import supervisor_settled
+        supervisor_settled(Client(), config, ROOT/args.run_id)
         return
     with (ROOT/'worker.lock').open('a+') as lock:
         try:
@@ -335,6 +349,9 @@ def main():
             print(json.dumps(report))
             return
         if busy:
+            if args.event_triggered:
+                print(json.dumps({'disposition': 'busy', 'model_started': False}))
+                return
             raise ValueError('CLI worker is busy; no duplicate wake')
         if args.operation == 'reconcile-result':
             prior = next((r for r in runs if r['run_id'] == args.run_id), None)
@@ -514,6 +531,11 @@ Explicit correction/continuation instruction:
         client = Client()
         snapshot = client.request('/api/state')
         task = client.request('/api/tasks/'+args.task)
+        if args.queued_generation is not None and task['generation'] != args.queued_generation:
+            if args.event_triggered:
+                print(json.dumps({'disposition': 'stale', 'model_started': False}))
+                return
+            raise ValueError('Selected task generation changed; no model wake')
         validate_task(task, snapshot, config)
         account, models, limits = rpc_account(config['codex'])
         digest = check_account(account, models, limits, config)
@@ -525,6 +547,8 @@ Explicit correction/continuation instruction:
                   'model': config['model'], 'reasoning': config['reasoning'],
                   'dispatch_module_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   'account_email_sha256': digest, 'plan_type': account.get('planType')}
+        from .cli_event_dispatch import reserve_run
+        reserve_run(client, config, ROOT, run_dir, task, record)
         save(run_dir/'state.json', record)
         (run_dir/'prompt.txt').write_text(prompt(config, task, run_dir))
         spawn(record, run_dir, lock.fileno())
@@ -1120,6 +1144,14 @@ def validate_queued_wait(run, task, response, report, wait_receipt, worker, owne
 
 
 def spawn(record, run_dir, lock_fd):
+    if record.get('wake_id'):
+        # Exclusive intent precedes the one Popen. A crash in this gap remains
+        # unknown; neither event delivery nor recovery may replay the intent.
+        fd = os.open(run_dir/'model-spawn-intent.json', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump({'run_id': record['run_id'], 'wake_id': record['wake_id']}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
     with (run_dir/'supervisor.log').open('ab') as log:
         subprocess.Popen([sys.executable, '-m', 'coordinator.cli_dispatch', '_run',
                           '--run-id', record['run_id'], '--lock-fd', str(lock_fd)],
