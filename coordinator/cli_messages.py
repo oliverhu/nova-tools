@@ -122,7 +122,7 @@ def event(book, message, state):
 def submit(client, request, root=ROOT, config_path=CONFIG):
     required = {'run_id', 'task', 'generation', 'step', 'worker', 'thread_id',
                 'account_email_sha256', 'model', 'reasoning', 'message_id', 'text'}
-    if not isinstance(request, dict) or set(request) != required:
+    if not isinstance(request, dict) or set(request) not in (required, required | {'media'}):
         raise ValueError('Message requires exact binding, message_id and text only')
     if (type(request['generation']) is not int or type(request['step']) is not int
             or not isinstance(request['message_id'], str)
@@ -143,20 +143,35 @@ def submit(client, request, root=ROOT, config_path=CONFIG):
         if existing:
             if existing['request_sha256'] != digest(request):
                 raise ValueError('Message ID was reused with different content or binding')
+            if 'media_manifest' in existing:
+                from .cli_media import verify
+                verify(run_dir, existing['media_manifest'], existing['media_manifest_sha256'])
             return public(existing)
         if len(book['messages']) >= 1000:
             raise ValueError('Run message limit reached; no message staged')
         message = {**request, 'sequence': len(book['messages'])+1,
                    'text_sha256': hashlib.sha256(request['text'].encode()).hexdigest(),
                    'request_sha256': digest(request)}
+        if 'media' in request:
+            from .cli_media import stage
+            manifest, content_hash = stage(run_dir, request, message['sequence'])
+            message.pop('media')  # Never put transport bytes into ledger/telemetry.
+            message.update(media_manifest=manifest, media_manifest_sha256=content_hash,
+                           media_status='staged', inspection=None)
         book['messages'].append(message)
         event(book, message, 'queued')
         return public(message)
 
 
 def public(message):
-    return {k: message[k] for k in ('message_id', 'sequence', 'status', 'task', 'generation',
+    result = {k: message[k] for k in ('message_id', 'sequence', 'status', 'task', 'generation',
                                      'worker', 'run_id', 'thread_id', 'text_sha256')}
+    if 'media_manifest' in message:
+        result.update(media_manifest_sha256=message['media_manifest_sha256'],
+                      content_sha256=[i['sha256'] for i in message['media_manifest']['attachments']],
+                      media_status=message['media_status'], inspection=message['inspection'],
+                      media_preparation_sha256=message.get('media_preparation_sha256'))
+    return result
 
 
 def closeout(run_dir):
@@ -222,16 +237,27 @@ def receive(client, ident, root=ROOT, config_path=CONFIG):
                 raise ValueError('Message delivery ended; no automatic replay')
             if any(message[k] != v for k, v in target.items()):
                 raise ValueError('Queued message binding became stale; retained for inspection')
+            media = {}
+            if 'media_manifest' in message:
+                from .cli_media import prepare
+                media = {'media_manifest':message['media_manifest'],
+                         'media_preparation':prepare(message, run_dir, config)}
+                message['media_preparation'] = media['media_preparation']
+                message['media_preparation_sha256'] = digest(media['media_preparation'])
+                message['media_status'] = 'delivered'
             if message['status'] == 'queued':
                 event(book, message, 'delivered_to_tool')
-            return {**public(message), 'text': message['text'],
+            return {**public(message), **media, 'text': message['text'],
                     'notice': 'Scoped follow-up; no consent or permission override. Delivery to tool is not worker readback. '
                               'Acknowledge exact message_id/sequence/text_sha256 using nova-cli-worker message-readback. '
+                              'For media include manifest/content hashes and inspection records; acknowledgment alone is not inspection. '
                               'Until readback, this same sequence is returned; later messages remain queued.'}
 
 
 def acknowledge(client, receipt, root=ROOT, config_path=CONFIG):
-    if (not isinstance(receipt, dict) or set(receipt) != {'run_id', 'message_id', 'sequence', 'text_sha256'}
+    base = {'run_id', 'message_id', 'sequence', 'text_sha256'}
+    media_keys = {'media_manifest_sha256','media_preparation_sha256','content_sha256','inspection'}
+    if (not isinstance(receipt, dict) or set(receipt) not in (base, base | media_keys)
             or type(receipt['sequence']) is not int):
         raise ValueError('Exact run/message/sequence/content readback required')
     if own_run(root) != receipt['run_id']:
@@ -244,10 +270,19 @@ def acknowledge(client, receipt, root=ROOT, config_path=CONFIG):
         target = binding(root, run, config, client.request('/api/tasks/'+run['task']))
         message = next((m for m in book['messages'] if m['message_id'] == receipt['message_id']), None)
         if (message is None or any(message[k] != v for k, v in target.items())
-                or any(message[k] != receipt[k] for k in receipt)
+                or any(message[k] != receipt[k] for k in base)
                 or message['status'] not in ('delivered_to_tool', 'readback')
                 or any(m['status'] != 'readback' for m in book['messages'][:message['sequence']-1])):
             raise ValueError('Message not delivered, mismatched or out of order')
+        if 'media_manifest' in message:
+            from .cli_media import validate_inspection
+            validate_inspection(run_dir, message, receipt)
+            if message['status'] == 'readback' and message['inspection'] != receipt['inspection']:
+                raise ValueError('Conflicting inspection retry')
+            message['inspection'] = receipt['inspection']
+            message['media_status'] = 'acknowledged'
+        elif set(receipt) != base:
+            raise ValueError('Unexpected media receipt on legacy text')
         if message['status'] != 'readback':
             event(book, message, 'readback')
         return public(message)
