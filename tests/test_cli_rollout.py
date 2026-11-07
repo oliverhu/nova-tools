@@ -8,6 +8,17 @@ rollout = importlib.util.module_from_spec(spec); spec.loader.exec_module(rollout
 
 
 class RolloutTests(unittest.TestCase):
+    def test_v2_includes_qualified_result_dependency_without_migrating_v1_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); source = root/'source'; installed = root/'installed'
+            source.mkdir(); installed.mkdir()
+            for name in rollout.EVENT_FILES_V2: (source/name).write_text('value = 2\n')
+            old = root/'old'; previous = rollout.plan(source, installed, old, 'mini', profile='event-dispatch')
+            new = root/'new'; current = rollout.plan(source, installed, new, 'mini', profile='event-dispatch-v2')
+            self.assertNotIn('cli_results.py', previous['files'])
+            self.assertIn('cli_results.py', current['files'])
+            rollout.apply(old, 'mini'); self.assertFalse((installed/'cli_results.py').exists())
+            rollout.apply(new, 'mini'); self.assertTrue((installed/'cli_results.py').exists())
     def test_event_profile_preserves_unrelated_modules_and_rolls_back_absent_dependency(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); source = root/'source'; destination = root/'installed'

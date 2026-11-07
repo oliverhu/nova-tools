@@ -105,6 +105,15 @@ def validate_task(task, state, config):
     if any(t.get('status') == 'running' and t.get('owner') == config['worker'] for t in state['tasks']):
         raise ValueError('Worker already owns a running task; no duplicate wake')
     worker = next(w for w in state['workers'] if w['id'] == config['worker'])
+    dispatch_policy = worker.get('event_dispatch')
+    local_event = config.get('event_dispatch')
+    if (isinstance(local_event, dict) and local_event.get('enabled') is True
+            and (not isinstance(dispatch_policy, dict) or dispatch_policy.get('enabled') is not True)):
+        raise ValueError('Event delivery is not enrolled for this worker; no model or local admission')
+    if (isinstance(dispatch_policy, dict) and dispatch_policy.get('enabled')
+            and isinstance(dispatch_policy.get('task_ids'), list)
+            and task.get('id') not in dispatch_policy['task_ids']):
+        raise ValueError('Task is outside this worker\'s current dispatch pilot; no model or local admission')
     if worker.get('paused') or not worker.get('online'):
         raise ValueError('Worker must be online and unpaused')
     req = task.get('requirements', {})

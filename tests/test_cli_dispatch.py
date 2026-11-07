@@ -37,6 +37,17 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_task(self.task, self.state, self.config)
 
+    def test_service_pilot_filter_refuses_unrelated_manual_wake_before_admission(self):
+        worker = self.state['workers'][0]
+        worker['event_dispatch'] = {'enabled': True, 'task_ids': ['b'*16]}
+        with self.assertRaises(ValueError): validate_task(self.task, self.state, self.config)
+        worker['event_dispatch']['task_ids'] = [self.task['id']]
+        validate_task(self.task, self.state, self.config)
+
+    def test_local_event_opt_in_without_service_enrollment_refuses_before_model_work(self):
+        with self.assertRaises(ValueError):
+            validate_task(self.task, self.state, {**self.config, 'event_dispatch': {'enabled': True}})
+
     def test_auth_environment_does_not_inject_studio_or_api_account(self):
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'test', 'CODEX_API_KEY': 'test',
                                     'CODEX_HOME': '/wrong', 'OPENAI_BASE_URL': 'wrong'}):

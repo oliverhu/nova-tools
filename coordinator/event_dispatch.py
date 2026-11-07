@@ -231,6 +231,7 @@ def projection(store, db, worker):
         return None
     wake = db.execute('SELECT * FROM dispatch_wakes WHERE worker=? ORDER BY created_at DESC,id DESC LIMIT 1', (worker,)).fetchone()
     result = {'enabled': bool(config['enabled']), 'availability': config['availability'],
+              'task_ids': json.loads(config['task_filter']),
               'updated_at': config['observed_at'], 'stale': config['observed_at'] <= store.clock() - 90,
               'latest_run': None}
     result['issue'] = json.loads(config['report']).get('issue')
@@ -243,6 +244,10 @@ def projection(store, db, worker):
         'harness_failure_count': sum(s['failure_classification'] == 'harness' for s in classified) if classified else None,
         'manual_approval_count': db.execute("SELECT COUNT(*) FROM events WHERE kind='approval-applied' AND task_id IN "
             "(SELECT task_id FROM dispatch_wakes WHERE worker=?)", (worker,)).fetchone()[0]}
+    result['metrics']['manual_intervention_count'] = db.execute(
+        "SELECT COUNT(*) FROM events WHERE kind IN ('approval-applied','reconciled','outcome-corrected','attempts-corrected') "
+        "AND task_id IN (SELECT task_id FROM dispatch_wakes WHERE worker=?)", (worker,)).fetchone()[0]
+    result['metrics']['manual_intervention_scope'] = 'Audited approvals and operator outcome/attempt reconciliation only'
     if wake:
         task = db.execute('SELECT created,status,progress FROM tasks WHERE id=?', (wake['task_id'],)).fetchone()
         result['latest_run'] = {k: wake[k] for k in ('run_id', 'task_id', 'queued_generation', 'claim_generation',
@@ -254,8 +259,8 @@ def projection(store, db, worker):
         result['latest_run'].update(
             task_status=task['status'],
             task_outcome=json.loads(wake['settlement']).get('outcome') if wake['status'] == 'settled' else None,
-            next_action='Review exact run settlement; never replay' if wake['status'] == 'reserved' else
+            next_action='Waiting for worker to claim this task' if wake['status'] == 'reserved' else
                 'Owner continues actual task' if wake['status'] == 'claimed' else 'Select next eligible task',
-            blocker='Delivery not yet reconciled' if wake['status'] == 'reserved' else None,
+            blocker='Worker report is stale; execution state unknown' if result['stale'] else result['issue'],
             artifact_link='/api/tasks/' + wake['task_id'])
     return result
