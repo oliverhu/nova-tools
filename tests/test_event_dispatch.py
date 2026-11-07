@@ -65,6 +65,60 @@ class EventDispatchTests(unittest.TestCase):
                 'execution_stopped': True, 'input_settled': True, 'unknown_operations': [],
                 'unsettled_operations': [], 'unreceived_message_ids': []}
 
+    def capability_refinement(self, task):
+        return dispatch.require_capabilities(self.store, 'admin', task['id'], {
+            'request_id': 'f'*32, 'generation': task['generation'], 'expected_requirements': task['requirements'],
+            'capabilities': ['builtin-browser-cli'], 'execution_stopped': True, 'external_state_checked': True,
+            'evidence': 'Exact actor inventory lacks capability required by original acceptance'})
+
+    def preclaim_settlement(self, binding, event_id):
+        body = self.settlement(binding, generation=0)
+        for key in ('outcome', 'failure_classification'): body.pop(key)
+        body.update(external_state_checked=True, claim_attempted=False, finish_attempted=False,
+            capability_event_id=event_id, evidence_profile='explicit-cleanup',
+            evidence_sha256={n:'e'*64 for n in dispatch.PRECLAIM_PROFILES['explicit-cleanup']})
+        return body
+
+    def test_capability_refinement_excludes_both_event_and_fallback_without_changing_acceptance(self):
+        task = self.add(); binding = self.reserve(task)
+        response = self.capability_refinement(task)
+        self.assertTrue(self.capability_refinement(task)['duplicate'])
+        current = self.store.detail(task['id'])
+        for key in ('generation', 'description', 'steps', 'dependencies', 'owner', 'fix_attempts_used'):
+            self.assertEqual(current[key], task[key])
+        self.assertIsNone(dispatch.next_candidate(self.store,self.worker)['task_id'])
+        self.assertIsNone(self.store.claim(self.worker,task['id'],binding)['task'])
+        self.assertEqual(current['requirements']['worker'],self.worker)
+        self.assertEqual(response['requirements']['capabilities'],['builtin-browser-cli'])
+
+    def test_preclaim_settlement_is_distinct_from_finish_and_preserves_unsupported_task(self):
+        task = self.add(); binding = self.reserve(task)
+        event = self.capability_refinement(task)
+        body = self.preclaim_settlement(binding,event['event_id'])
+        response = dispatch.settle_preclaim(self.store,self.worker,body)
+        self.assertFalse(response['duplicate'])
+        self.assertTrue(dispatch.settle_preclaim(self.store,self.worker,body)['duplicate'])
+        current = self.store.detail(task['id'])
+        self.assertEqual((current['generation'],current['status'],current['owner'],current['receipts']),(0,'queued',None,[]))
+        self.assertEqual(current['events'][-1]['kind'],'wake-preclaim-settled')
+        with self.store.connection() as db: view = dispatch.projection(self.store,db,self.worker)
+        self.assertEqual(view['latest_run']['task_outcome'],'unclaimed_stopped')
+        self.assertEqual(view['metrics']['preclaim_stop_count'],1)
+        self.assertEqual(view['metrics']['manual_intervention_count'],2)
+        self.assertIsNone(dispatch.next_candidate(self.store,self.worker)['task_id'])
+
+    def test_preclaim_ack_refuses_unknowns_changed_history_foreign_identity_and_actual_claim(self):
+        task = self.add(); binding = self.reserve(task)
+        body = self.preclaim_settlement(binding,1)
+        with self.assertRaises(Conflict): dispatch.settle_preclaim(self.store,self.worker,body)
+        event = self.capability_refinement(task); body['capability_event_id'] = event['event_id']
+        with self.assertRaises(Conflict): dispatch.settle_preclaim(self.store,MINI_VM_WORKERS[1],body)
+        with self.assertRaises(Invalid): dispatch.settle_preclaim(self.store,self.worker,{**body,'unknown_operations':['input']})
+        with self.assertRaises(Conflict): dispatch.settle_preclaim(self.store,self.worker,{**body,'token':'wrong'*10})
+        self.store.pulse(self.worker, {'capacity': {'capabilities':['builtin-browser-cli']}})
+        self.store.claim(self.worker,task['id'],binding)
+        with self.assertRaises(Conflict): dispatch.settle_preclaim(self.store,self.worker,body)
+
     def test_dependency_commit_notifies_existing_event_wait(self):
         prerequisite = self.add('prerequisite', requirements={'worker': MINI_VM_WORKERS[1]})
         # The other worker is not enrolled as locally available yet, so an

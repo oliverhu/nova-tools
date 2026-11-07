@@ -52,6 +52,50 @@ def active(db, worker):
     return db.execute("SELECT * FROM dispatch_wakes WHERE worker=? AND status!='settled'", (worker,)).fetchone()
 
 
+def require_capabilities(store, actor, task_id, body):
+    """Refine declared acceptance into scheduler requirements; never grant access.
+
+    Both ordinary claims and event admission already use Store.fits. Additive
+    refinement therefore also covers the existing Dispatcher fallback.
+    """
+    keys = {'request_id', 'generation', 'expected_requirements', 'capabilities',
+            'execution_stopped', 'external_state_checked', 'evidence'}
+    require(actor == 'admin', 'Administrator required')
+    require(set(body) == keys and hexid(body['request_id'], 32)
+            and type(body['generation']) is int and body['generation'] >= 0
+            and isinstance(body['expected_requirements'], dict)
+            and type(body['capabilities']) is list and 0 < len(body['capabilities']) <= 20
+            and all(isinstance(c, str) and re.fullmatch('[a-z][a-z0-9-]{0,78}', c) for c in body['capabilities'])
+            and len(set(body['capabilities'])) == len(body['capabilities'])
+            and body['execution_stopped'] is True and body['external_state_checked'] is True
+            and isinstance(body['evidence'], str) and 0 < len(body['evidence'].strip()) <= 2000,
+            'Exact generation, original requirements, additive capabilities and checked/stopped evidence required')
+    with store.transaction() as db:
+        prior = db.execute("SELECT * FROM events WHERE task_id=? AND kind='task-capabilities-required' ORDER BY id",
+                           (task_id,)).fetchall()
+        for event in prior:
+            value = json.loads(event['detail'])
+            if value['request']['request_id'] == body['request_id']:
+                require(value['request'] == body, 'Conflicting capability refinement request', True)
+                return {'event_id': event['id'], 'requirements': value['requirements'], 'duplicate': True}
+        row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
+        require(row is not None, 'Unknown task')
+        require(row['generation'] == body['generation'] and row['status'] in ('queued', 'blocked')
+                and json.loads(row['requirements']) == body['expected_requirements']
+                and (row['status'] != 'blocked' or json.loads(row['result']).get('execution_stopped') is True)
+                and not db.execute("SELECT id FROM dispatch_wakes WHERE task_id=? AND status='claimed'", (task_id,)).fetchone(),
+                'Task changed, owns execution or retains an unsettled claimed wake', True)
+        requirements = {**body['expected_requirements'], 'capabilities': sorted(
+            set(body['expected_requirements'].get('capabilities', [])) | set(body['capabilities']))}
+        require(len(requirements['capabilities']) <= 20, 'Too many required capabilities')
+        db.execute('UPDATE tasks SET requirements=?,updated=? WHERE id=?',
+                   (encoded(requirements), store.clock(), task_id))
+        store.event(db, actor, 'task-capabilities-required', task_id,
+                    encoded({'request': body, 'requirements': requirements}))
+        return {'event_id': db.execute('SELECT last_insert_rowid()').fetchone()[0],
+                'requirements': requirements, 'duplicate': False}
+
+
 def configure(store, actor, worker, body):
     require(actor == 'admin' and worker in MINI_VM_WORKERS, 'Administrator and enrolled Mini required')
     require(set(body) in ({'enabled', 'readiness_revision', 'evidence'},
@@ -225,6 +269,75 @@ def settle(store, worker, body):
         return {'settled': True, 'duplicate': False}
 
 
+PRECLAIM_COMMON = {'state.json', 'worker-report.json', 'task-readback.json', 'tool-discovery.json',
+                   'wake-reservation-response.json', 'model-spawn-intent.json', 'events.jsonl'}
+PRECLAIM_PROFILES = {'explicit-cleanup': PRECLAIM_COMMON | {'stopped-cleanup.json', 'readiness-check.json'},
+                     'noninvocation-marker': PRECLAIM_COMMON | {'finish-response.json', 'readiness.json'}}
+
+
+def settle_preclaim(store, worker, body):
+    """An ended, never-claimed reservation is distinct from an owning finish.
+
+    The supervisor validates the immutable originals locally; this transaction
+    independently fences actual service history and the audited disposition.
+    Nothing expires, claims a task, fabricates a finish or consumes an attempt.
+    """
+    keys = {'wake_id', 'run_id', 'token', 'generation', 'readiness_revision', 'result_sha256',
+            'capability_event_id', 'evidence_sha256', 'evidence_profile', 'execution_stopped', 'external_state_checked',
+            'input_settled', 'local_lock_released', 'unknown_operations', 'unsettled_operations',
+            'unreceived_message_ids', 'claim_attempted', 'finish_attempted'}
+    require(worker in MINI_VM_WORKERS and set(body) == keys
+            and hexid(body['wake_id'], 32) and hexid(body['run_id'], 32)
+            and isinstance(body['token'], str) and 32 <= len(body['token']) <= 128
+            and type(body['generation']) is int and body['generation'] == 0
+            and type(body['capability_event_id']) is int and body['capability_event_id'] > 0
+            and hexid(body['readiness_revision'], 64) and hexid(body['result_sha256'], 64)
+            and isinstance(body['evidence_profile'], str) and body['evidence_profile'] in PRECLAIM_PROFILES
+            and isinstance(body['evidence_sha256'], dict)
+            and set(body['evidence_sha256']) == PRECLAIM_PROFILES[body['evidence_profile']]
+            and all(hexid(v, 64) for v in body['evidence_sha256'].values())
+            and all(body[k] is True for k in ('execution_stopped', 'external_state_checked', 'input_settled', 'local_lock_released'))
+            and all(body[k] == [] for k in ('unknown_operations', 'unsettled_operations', 'unreceived_message_ids'))
+            and body['claim_attempted'] is False and body['finish_attempted'] is False,
+            'Exact positive no-claim supervisor settlement and immutable original evidence required')
+    public = {**{k: v for k, v in body.items() if k != 'token'}, 'outcome': 'unclaimed_stopped',
+              'acceptance_complete': False}
+    with store.transaction() as db:
+        wake = db.execute('SELECT * FROM dispatch_wakes WHERE id=?', (body['wake_id'],)).fetchone()
+        config = db.execute('SELECT * FROM dispatch_workers WHERE worker=?', (worker,)).fetchone()
+        require(wake and wake['worker'] == worker and wake['run_id'] == body['run_id']
+                and wake['readiness_revision'] == body['readiness_revision']
+                and secrets.compare_digest(wake['token_hash'], hashlib.sha256(body['token'].encode()).hexdigest()),
+                'Foreign preclaim settlement', True)
+        if wake['status'] == 'settled':
+            require(wake['settlement'] == encoded(public), 'Conflicting preclaim settlement', True)
+            return {'settled': True, 'duplicate': True, 'outcome': 'unclaimed_stopped'}
+        row = db.execute('SELECT * FROM tasks WHERE id=?', (wake['task_id'],)).fetchone()
+        require(wake['status'] == 'reserved' and wake['queued_generation'] == 0 and wake['claim_generation'] is None
+                and config and config['enabled'] and config['readiness_revision'] == body['readiness_revision']
+                and row['generation'] == 0 and row['step'] == 0 and row['status'] == 'queued'
+                and row['owner'] is None and row['last_owner'] is None and row['claim_hash'] is None
+                and json.loads(row['requirements']).get('worker') == worker and json.loads(row['result']) == {}
+                and all(row[k] == 0 for k in ('fix_attempts_used', 'total_fix_attempts', 'attempt_base', 'reassignment_count'))
+                and not db.execute('SELECT task_id FROM receipts WHERE task_id=?', (row['id'],)).fetchone()
+                and store.approval_state(db, row) is None,
+                'Only an exact never-owned generation-zero reservation may settle without a finish', True)
+        events = db.execute('SELECT * FROM events WHERE task_id=? ORDER BY id', (row['id'],)).fetchall()
+        require([e['kind'] for e in events] == ['submitted', 'wake-reserved', 'task-capabilities-required']
+                and events[1]['actor'] == worker and json.loads(events[1]['detail']).get('wake_id') == wake['id']
+                and events[2]['actor'] == 'admin' and events[2]['id'] == body['capability_event_id'],
+                'Unexpected service history or missing exact audited capability disposition', True)
+        disposition = json.loads(events[2]['detail'])
+        require(disposition['request']['generation'] == 0
+                and disposition['requirements'] == json.loads(row['requirements']),
+                'Capability disposition no longer matches this task', True)
+        db.execute("UPDATE dispatch_wakes SET status='settled',phase='preclaim-stopped',phase_at=?,settled_at=?,settlement=? WHERE id=?",
+                   (store.clock(), store.clock(), encoded(public), wake['id']))
+        db.execute("UPDATE dispatch_workers SET availability='available',observed_at=? WHERE worker=?", (store.clock(), worker))
+        store.event(db, worker, 'wake-preclaim-settled', row['id'], encoded(public))
+        return {'settled': True, 'duplicate': False, 'outcome': 'unclaimed_stopped'}
+
+
 def projection(store, db, worker):
     config = db.execute('SELECT * FROM dispatch_workers WHERE worker=?', (worker,)).fetchone()
     if not config:
@@ -245,9 +358,11 @@ def projection(store, db, worker):
         'manual_approval_count': db.execute("SELECT COUNT(*) FROM events WHERE kind='approval-applied' AND task_id IN "
             "(SELECT task_id FROM dispatch_wakes WHERE worker=?)", (worker,)).fetchone()[0]}
     result['metrics']['manual_intervention_count'] = db.execute(
-        "SELECT COUNT(*) FROM events WHERE kind IN ('approval-applied','reconciled','outcome-corrected','attempts-corrected') "
+        "SELECT COUNT(*) FROM events WHERE kind IN ('approval-applied','reconciled','outcome-corrected','attempts-corrected',"
+        "'task-capabilities-required','wake-preclaim-settled') "
         "AND task_id IN (SELECT task_id FROM dispatch_wakes WHERE worker=?)", (worker,)).fetchone()[0]
-    result['metrics']['manual_intervention_scope'] = 'Audited approvals and operator outcome/attempt reconciliation only'
+    result['metrics']['manual_intervention_scope'] = 'Audited approvals, outcome/attempt corrections, capability refinement and preclaim reconciliation only'
+    result['metrics']['preclaim_stop_count'] = sum(s.get('outcome') == 'unclaimed_stopped' for s in settlements)
     if wake:
         task = db.execute('SELECT created,status,progress FROM tasks WHERE id=?', (wake['task_id'],)).fetchone()
         result['latest_run'] = {k: wake[k] for k in ('run_id', 'task_id', 'queued_generation', 'claim_generation',
