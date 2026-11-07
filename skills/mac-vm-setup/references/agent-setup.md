@@ -1,88 +1,67 @@
-# Nova developers, coordinator and dispatcher
+# Nova app workers and service orchestration
 
-Current Nova workflow as of November 3, 2026:
+The human-approved workflow as of **2026-11-07** uses Codex app chats and the Nova
+service through `nova-coord`. All task intake, progress, handoffs, decisions and
+outcomes live in the service. Do not message peer chats, revive retired
+Coordinator/Dispatcher routes or launch a Codex CLI model for new work.
 
 | Role | Work |
 | --- | --- |
-| Delivery Coordinator | Intake, priorities, task IDs, assignments, human decisions, status and recording completion from developer reports; no extra source/runtime/UI/release validation |
-| Queue Dispatcher | Existing 15-minute readiness check; wakes an eligible idle mapped developer for a specific task without duplicate assignments or claiming for them |
-| VM1/VM2 developers | Self-claim; isolated implementation, actual acceptance, source audit, main integration, cleanup and direct completion report to Coordinator |
-| Studio heavy developer | Same ownership for assigned host work; configured heavy compilation stays on Studio and accounts for guest resource use |
-| Publisher | A qualified developer on a separate release claim; performs actual delivery checks and reports to Coordinator |
-| Service/reporters | Atomic claims, dependencies, retries, heartbeats and hourly release creation; no model or feature execution |
+| Service Coordinator | Intake, priorities, deduplicated tasks, scoped human decisions, administrative outcome checks and instruction upkeep; no repeated product validation. |
+| Service Readiness | Observe eligibility, adoption and concrete readiness gaps; no worker chat wake-ups or claims on their behalf. |
+| App developer | Self-claim, implement/validate in isolation, audit/integrate main, settle execution, finish and verify actual API outcome. |
+| Publisher | Qualified app developer on a separate authorized release claim; ordinary setup/features do not publish. |
 
-The active service worker IDs are `oliverhu-mac-studio`,
-`oliverhu-mac-studio-vm1`, and `oliverhu-mac-studio-vm2`. Legacy `oliver-mac` and
-`oliver-mini` retain history; don't reactivate their old schedules. These are
-existing deployment identities, not names to reuse on arbitrary new machines.
-Coordinator/Dispatcher are chat roles, not additional queue workers. Keep actual
-chat/remote-host/project mappings and credentials in private machine state.
+## Enroll a machine and fresh chat
 
-A new concurrent machine needs a distinct identity supported by the current
-server/bootstrap/installer and enrolled with its own credential. A replacement
-must first settle the previous owner and reporter. The VM bootstrap must not
-copy another guest's worker credential, SSH host identity or app consent record.
-The explicitly selected shared GitHub client key is separate from these unique
-worker identities; follow the [host baseline](host-baseline.md).
+Use a unique supported Nova worker credential and SSH host identity for each
+machine. Keep the selected shared GitHub client key separate; follow the
+[host baseline](host-baseline.md). Codex accounts may differ. Do not copy another
+worker's queue credential, active claim, session token or OS consent state.
 
-Configure `COORD_HEAVY_WORKER` through the actual deployment process, not by
-editing a local manifest and assuming the server changed. For Nova it selects
-Studio for `engine_rebuild`; standard tasks still obey explicit capacities and
-required capabilities. Missing Studio capacity does not authorize guest fallback.
+Inspect current service ownership before replacement. Existing operations must
+settle or use the explicitly audited abandonment route; historical unknown
+resources remain unknown. Create a fresh local app chat through supported app
+creation tools/UI with repo/service bootstrap context, not old chat history.
+Archive superseded sessions only after this boundary. A new chat does not inherit
+another session's execution authority.
 
-Developers send Coordinator the service task ID/generation, exact landed commit,
-real test results, limitations, receipt path and stopped-operation evidence.
-Coordinator records completion without rerunning validation. The owning worker
-still uses its claim-compatible `finish` path when directed; administrative role
-does not justify copying a claim token or fabricating a blocked state. Confirm
-service completion separately from receipt delivery.
+Obtain the approved instruction commit from authenticated service policy. Fetch
+that exact repository revision through verified GitHub access, install both
+managed skills, preserve differing local bytes outside skill discovery, and
+verify the complete installed hash inventory. Read the current instructions and
+record actual adoption. Keep source, deployment, installation and adoption
+receipts separate. A successful sync is not machine readiness.
 
-Preserve the existing Dispatcher and separate hourly service release timer.
-Do not create extra polls while provisioning. Hourly publishers deliver pinned
-macOS installer/website metadata and iOS uploads through Xcode; they leave
-TestFlight, App Review and public iOS release untouched. This is release-task
-scope, never automatic follow-on from machine setup. Retain task-specific human
-holds and reconcile unknown effects before retries.
+Register the actual chat/host/account binding through the app-session API and
+keep its private session file local. Qualify actual task-relevant tools and
+permissions under [permission onboarding](permission-onboarding.md), including
+GitHub/service access and planned runner contexts. Administrator qualification
+records evidence; it never grants OS consent. Missing protocol deployment or
+unknown/denied required access keeps the worker onboarding-only.
 
-The current service exposes 20 attempts per host and up to six reassignments;
-read its actual counters and policy before execution. A missing heartbeat does
-not relinquish a claim, and an approval wait is not a technical retry.
+## Local wake and task loop
 
-Coordinator owns keeping both installed skills current on Studio and both VMs.
-After a source workflow change or worker enrollment/reconnection, synchronize from
-the verified `nova-tools/main` commit, preserve prior local bytes outside skill
-discovery, verify installed file hashes and record a private per-host receipt.
-Notify developers and Dispatcher to reread the coordination skill at a safe
-boundary and record their revision/hash readback. Dispatcher checks the expected
-revision before new assignments and reports stale installations to Coordinator.
-Recheck after client upgrades; use existing activity rather than another timer.
-This maintenance neither restarts active work nor adds Coordinator product tests.
+Provision one supported local app heartbeat in the worker's own account, normally
+every 15 minutes, only within the user's authorized setup. Test an actual wake.
+The machine and app must be available. A shell poll, copied automation or running
+app alone does not prove it can start a chat turn. Retire the old Dispatcher wake
+and CLI model paths; preserve the separate hourly service release timer and
+unrelated schedules. No per-task monitors or peer-chat assignment loop.
 
-When this skill comes from `nova-tools`, read its current `docs/agent-coordination.md`
-and `skill/SKILL.md` for the operational details. The portable folder remains
-self-contained without them. On another organization/deployment, retain the
-separation of responsibilities but discover its real roles, authorization and
-queue policy instead of importing Nova's schedules or release authority.
+Use the session file on `nova-coord` task commands. Read the service/inbox, verify
+current policy/adoption/readiness, then resume only that session's own claim or
+atomically pull eligible work. Continue until none remains. Post durable service
+handoffs containing task/generation, actual outcome, evidence, next action,
+limitations and settled execution. Verify finish plus fresh API readback before
+completion. Delivery, installation, adoption and actual acceptance are distinct.
 
-## Compact actionable communication
+Studio remains the configured engine-rebuild host; routine work uses actual
+capabilities/capacity. Preserve existing attempt budgets, dependencies, human
+holds and uncertain outcomes. A stale heartbeat does not release ownership.
+No task token transfer, fake completion, TCC edits or new blanket permission.
 
-Use one handoff containing task/generation, changed state or requested action,
-actual evidence/receipt paths (and source commit when relevant), next action and
-its owner, remaining limits and cleanup. Preserve current acceptance, claims,
-dependencies, human stops and unknown operations. A handoff is not a claim,
-approval, qualified result or completed service transition.
-
-Act on an actionable request within existing authority. Send another message only
-for a material state change, concrete blocker, required decision or requested
-readback. Do not reply merely “acknowledged”, echo unchanged status or request an
-acknowledgment of an acknowledgment. No new chats, relays, timers or polls. This
-does not suppress required service/message protocol acknowledgments, actual hash
-adoption readbacks, approval receipts, or finish-response/fresh-API verification.
-Delivery, installation, actor adoption and actual acceptance stay distinct.
-
-Instruction upkeep uses the existing Coordinator activity. Record each real host's
-source commits, expected/observed installed hashes and verification time; record
-each actual actor's loaded hashes/run or chat separately at a safe boundary.
-Unobserved installation or adoption stays pending with its owner and next action;
-do not copy another host's receipt or ask actors to acknowledge unchanged bytes
-again. Dispatcher reports changes to these records, not repeated reminders.
+When installed from nova-tools, the current `docs/app-session-protocol.md` and
+`docs/app-worker-bootstrap.md` provide exact API/CLI schemas. This portable guide
+still applies without those files; discover another deployment's real policy and
+enrollment mechanism rather than importing Nova worker IDs or release authority.
