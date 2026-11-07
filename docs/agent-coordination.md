@@ -461,3 +461,60 @@ Use the supported `settle --check-only` followed by `settle` on the owning guest
 Only local admission is settled. The original owner must submit a distinct unsigned
 plan through normal review and stop on denial; signing/install/launch and rejected
 command retry remain forbidden. An offline packet check cannot settle that guest.
+
+## Active CLI follow-ups (candidate; both-Mini qualification required)
+
+The guest-local `nova-cli-worker message --note-file /absolute/private.json`
+route stages an ordered follow-up for one already running task/run. It uses the
+existing saved-account check; it never claims, resumes or wakes a session. Invoke
+it only through an already authorized local/SSH worker route. This is an
+OS-user-authenticated private channel, not a network service. Do not include
+credentials or unrelated private material in messages. Follow-ups do not grant
+consent, release an approval hold, change a model or override user decisions.
+
+The private input has exactly `run_id`, `task`, `generation`, `step`, `worker`,
+`thread_id`, `account_email_sha256`, `model`, `reasoning`, `message_id` and `text`.
+Use actual launch state, the unique `thread.started` event and fresh owning task
+state for the target values. `message_id` is a fresh 32-character lowercase hex
+idempotency key. Retries with identical content return its existing result;
+conflicting reuse rejects. Text is bounded to 12,000 UTF-8 bytes. Input files and
+run state must be canonical, owner-only files outside source control.
+
+Foreground `nova-coord heartbeat TASK` and a normally settled `nova-coord run`
+command return the oldest outstanding follow-up in `cli_followup`. The receiver
+must be executing in Codex's actual `CODEX_THREAD_ID` context, matching the live
+run, account/model launch binding, lock and fresh task generation. Watchdog
+background heartbeats never deliver. There is no new model polling, timer,
+terminal injection, shared app-server endpoint or extra model invocation.
+A long command must finish before its response can deliver a message. A worker
+that does not call these existing commands has no promised delivery latency.
+
+States are deliberately separate: `queued` means durable staging only;
+`delivered_to_tool` means the foreground response was prepared for that session,
+not that the model read it. Lost responses remain unacknowledged and return the
+same sequence. The receiving worker records its actual readback using
+`nova-cli-worker message-readback --note-file /absolute/private-readback.json`.
+That file contains exactly `run_id`, `message_id`, `sequence`, `text_sha256` from
+the received message. The command verifies the actual receiving session and
+fresh binding, then records `readback`. Only that explicit readback releases the
+next ordered message. Duplicate acknowledgments are idempotent. The worker must
+not construct readback from a sender's staging file instead of actual receipt.
+
+`nova-cli-worker message-status --run-id RUN` returns message IDs, hashes, states,
+ordered audit events, availability and outstanding unreceived IDs, without text
+or unrelated transcript contents. An unavailable/finished run retains its audit;
+messages are never forwarded to a newer run or silently treated as received.
+After its exact child exits, the supervisor records outstanding IDs in run state
+and `message-closeout.json`, marking their audit state `session_ended_unread`.
+This reports missed delivery without changing the owning task's actual outcome.
+Inspect outstanding IDs before settling a run. There is no automatic retry,
+resume or duplicate wake. Delivery failures preserve the original command's
+outcome and return a diagnostic, leaving readback outstanding. API unavailability
+fails closed. Signal-0 liveness inspection may require normal automatic approval
+review in a restricted CLI tool context; a denial leaves delivery unavailable.
+Never remove the check or switch to an unreviewed route to conceal that limit.
+
+Current qualification and source commit belong in private task receipts, not this
+protocol document. Do not install or call this candidate fully accepted until
+actual delivery and readback on both Minis are recorded and normal source
+integration is complete.

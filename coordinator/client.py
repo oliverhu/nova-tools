@@ -288,6 +288,20 @@ def publish_permit(client,ident):
     return {'task_id':ident,'generation':claim['generation'],'worker':client.config['worker'],'exclusive':False}
 
 
+def cli_followup(client, ident):
+    """Only foreground CLI tool boundaries deliver; watchdog threads never do."""
+    if not os.environ.get('CODEX_THREAD_ID'):
+        return None
+    from .cli_messages import receive
+    try:
+        return receive(client, ident)
+    except Exception as error:
+        # Preserve the command/heartbeat outcome and leave messages unacknowledged.
+        # Do not print exception data which might contain unrelated local content.
+        return {'status': 'delivery_unavailable', 'error_type': type(error).__name__,
+                'notice': 'Follow-ups remain unacknowledged; inspect message-status before retrying.'}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,default=CONFIG)
@@ -345,7 +359,10 @@ def main():
         result.pop("claim_token",None)
         if result.get("task"):
             result["task"]=client.request("/api/tasks/"+result["task"]["id"])
-    elif args.command=="heartbeat":result=client.heartbeat(args.task,args.progress)
+    elif args.command=="heartbeat":
+        result=client.heartbeat(args.task,args.progress)
+        message=cli_followup(client,args.task)
+        if message is not None:result['cli_followup']=message
     elif args.command=="finish":result=client.finish(args.task,json.loads(args.receipt.read_text()),args.outcome)
     elif args.command=="reconcile":result=client.request(f"/api/tasks/{args.task}/reconcile",json.loads(args.file.read_text()))
     elif args.command=="correct-outcome":result=client.request(f"/api/tasks/{args.task}/correct-outcome",json.loads(args.receipt.read_text()))
@@ -399,7 +416,10 @@ def main():
     elif args.command=="run":
         command=args.args[1:] if args.args[:1]==["--"] else args.args
         if not command:parser.error("Specify a command after --")
-        sys.exit(supervised(client,args.task,command))
+        code=supervised(client,args.task,command)
+        message=cli_followup(client,args.task)
+        if message is not None:print(json.dumps({'cli_followup':message}),flush=True)
+        sys.exit(code)
     elif args.command=="ui":
         from .gateway import serve
         serve(client,args.port);return

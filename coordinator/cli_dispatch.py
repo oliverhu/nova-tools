@@ -184,6 +184,8 @@ def execute(config, run_dir, lock_fd):
             record['cli_pid'] = child.pid
             save(run_dir/'state.json', record)
             child.communicate((run_dir/'prompt.txt').read_bytes())
+        from .cli_messages import closeout
+        record['unreceived_message_ids'] = closeout(run_dir)
         client = Client()
         task = client.request('/api/tasks/'+record['task'])
         save(run_dir/'observed-task.json', task)
@@ -213,7 +215,8 @@ def verify_completion(task, run_dir):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-preclaim', '_run'])
+    parser.add_argument('operation', choices=['status', 'wake', 'resume', 'settle', 'reconcile-preclaim', '_run',
+                                            'message', 'message-status', 'message-readback'])
     parser.add_argument('--task')
     parser.add_argument('--run-id')
     parser.add_argument('--lock-fd', type=int)
@@ -231,6 +234,25 @@ def main():
     if socket.gethostname() != config['hostname'] or Client().config['worker'] != config['worker']:
         raise ValueError('Guest/worker identity differs from dispatch binding')
     ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if args.operation in ('message', 'message-status', 'message-readback'):
+        from . import cli_messages
+        client = Client()
+        if args.operation == 'message-status':
+            result = cli_messages.status(client, args.run_id)
+        else:
+            if not args.note_file:
+                parser.error('Message and readback require --note-file with exact private JSON')
+            cli_messages.private(args.note_file)
+            request = json.loads(args.note_file.read_text())
+            if args.operation == 'message':
+                # Auth preflight is scoped to sending, never a new model turn.
+                account, models, limits = rpc_account(config['codex'])
+                check_account(account, models, limits, config)
+                result = cli_messages.submit(client, request)
+            else:
+                result = cli_messages.acknowledge(client, request)
+        print(json.dumps(result))
+        return
     if args.operation == '_run':
         if not re.fullmatch('[a-f0-9]{32}', args.run_id or '') or args.lock_fd is None:
             raise ValueError('Invalid internal run')
@@ -409,6 +431,7 @@ def main():
             run_dir.mkdir(mode=0o700)
             record = {**{k: prior[k] for k in ('task','worker','model','reasoning','account_email_sha256','plan_type')},
                       'run_id': run_id, 'parent_run': prior['run_id'], 'resume_thread': thread,
+                      'queued_generation': task['generation'],
                       'status': 'starting', 'created_at': time.time()}
             text = f'''Continue ONLY your existing task {prior['task']} on {config['worker']}.
 Read fresh API and preserve its current generation, counters, claim and previous failures.
