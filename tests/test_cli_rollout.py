@@ -50,6 +50,21 @@ class RolloutTests(unittest.TestCase):
             self.assertEqual((installed/'cli_dispatch.py').read_text(), 'value = 1\n')
             self.assertEqual(run.read_bytes(), b'preserve held run')
 
+    def test_media_profile_preserves_launcher_and_held_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve(); source=root/'source'; installed=root/'installed'
+            source.mkdir(); installed.mkdir()
+            for name in rollout.MEDIA_FILES_V1: (source/name).write_text('value = 2\n')
+            (installed/'cli_messages.py').write_text('value = 1\n')
+            (installed/'cli_dispatch.py').write_text('held = True\n')
+            plan=root/'plan'; rollout.plan(source,installed,plan,'mini',profile='media-v1')
+            rollout.apply(plan,'mini')
+            self.assertTrue((installed/'cli_media.py').is_file())
+            self.assertEqual((installed/'cli_dispatch.py').read_text(),'held = True\n')
+            rollout.apply(plan,'mini',True)
+            self.assertFalse((installed/'cli_media.py').exists())
+            self.assertEqual((installed/'cli_messages.py').read_text(),'value = 1\n')
+
     def test_arbitrary_rollout_profile_refuses_before_creating_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

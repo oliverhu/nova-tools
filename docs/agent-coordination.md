@@ -617,3 +617,78 @@ Scoped retained-metadata evidence collection has a separate
 It cannot change normal admission, typed results, availability or wake ACK.
 Its source qualification and plans authorize no held-guest access or native
 probe; unknown resource and actual approval/operation holds remain binding.
+
+## Explicit local CLI media handoffs (media-v1)
+
+This extends the same authenticated inbox, active claim/account/thread binding,
+ordered ledger and foreground tool boundaries. It creates no chat, model wake,
+idle poll, URL reader or credential transport. From the existing authorized
+Studio SSH route, use `python3 scripts/send-cli-media.py --host ALIAS --note-file
+/absolute/private-note.json`. Use the normal exact message binding/text and an
+explicit `local_media` list of `{ "path": "/canonical/local/image.png",
+"media_type": "image/png" }`. Only those files are read. A fixed remote Python
+endpoint receives a bounded JSON packet on SSH stdin; names never enter shell
+commands. The receiving saved-account preflight and fresh live task check run
+before staging. Do not provision an alternative key/route if the existing route
+is unavailable. Connection loss can leave an unknown delivery: inspect exact
+message status before retrying the same immutable message ID/content.
+
+Transport bounds are four files, 16 MiB per file, 32 MiB per message, 128 MiB
+retained per run (including frames), 45 MiB wire input and a 256 MiB free reserve.
+Use ASCII display names of at most 120 safe characters. Canonical owner files,
+no links/traversal, count/size/hash checks and a private temporary directory
+precede atomic publication. The manifest schema 1 binds task, generation, step,
+worker, run, actual thread, account hash, model/reasoning, message ID, sequence,
+full-text SHA256 and each ordered media type/name/size/content hash/guest path.
+The ledger stores hashes/manifest, never base64 payloads. Exact retries recover
+an interrupted directory-to-ledger commit; conflicting retries refuse. Only owned
+unpublished temporary directories are removed. Unread/held originals stay private.
+A rejected/oversize packet preserves sender files/text; it does not silently
+submit a partial handoff. Use the legacy text route explicitly if appropriate.
+
+PNG/JPEG inputs have header/dimension limits (8192 per side, 32 megapixels), and
+must actually decode in the local image viewer. MP4/QuickTime originals are kept.
+GIF/WebP/WebM transfer with explicit unsupported inspection results. No format
+fallback or remote fetch occurs. `media_tools` in the existing guest CLI config
+may bind `ffprobe` and `ffmpeg`, each with exact canonical `path` and `sha256`.
+Missing tools, pin mismatches, corrupt/oversize metadata and extractor failures
+return unsupported, preserving the text and original. Tools run with argument
+arrays, no shell/network protocols, bounded output and time, and killed/reaped
+owned process groups on failure. Video accepts one video stream, at most 120
+seconds and the image dimension limits. It extracts five timestamps at 0%, 20%,
+40%, 60%, 80%, each at most 1024 pixels per side/4 MiB, with 15-second metadata
+and 12-second per-frame bounds. Sampling records original/manifest/frame hashes,
+actual timestamps, dimensions and tool pins. This is representative sampling;
+it says nothing about audio, every event or full-video understanding.
+
+A foreground heartbeat/run returns `media_manifest` and `media_preparation`.
+`ready_for_view` and `ready_for_frame_views` are preparation, never inspection.
+Use the actual local `view_image` tool for each image and all sampled frames.
+Then `nova-cli-worker message-readback --note-file ...` includes the four legacy
+readback fields plus `media_manifest_sha256`, `media_preparation_sha256` (including the exact
+delivered sampling metadata), ordered `content_sha256`, and one
+ordered `inspection` entry per attachment. An unviewed entry is
+`{"index":0,"state":"not_inspected","reason":"..."}`; unsupported entries
+use `state: "unsupported"` and the actual reason. An actually viewed image uses
+`{"index":0,"state":"inspected","tool":"view_image","views":[
+{"path":"EXACT_GUEST_PATH","sha256":"CONTENT_HASH","visual_fact":"Observed fact absent from the prompt"}]}`.
+Video views use each sampled frame path/hash and `timestamp_seconds`, with an
+observed fact per frame. These are explicit actual-session worker attestations;
+hash validation is content binding, not an oracle of model comprehension.
+Never attest viewing from staging receipts or infer inspection from delivery.
+
+States remain distinct: media `staged`, `delivered`, `acknowledged`, with separate
+per-attachment `inspected`, `unsupported` or `not_inspected` attestations. Full
+text/manifest/content readback is mandatory even for unsupported media. An honest
+uninspected acknowledgment may release ordering; it is never inspected acceptance.
+Legacy text requests/readbacks remain unchanged. No payloads/facts enter status
+telemetry beyond bounded explicit inspection facts; original files are never
+embedded in telemetry. Supervisor closeout retains unacknowledged media evidence.
+
+Use the existing `rollout-cli-results.py` `media-v1` profile (only cli_media and
+cli_messages) to freeze before/after bytes, apply and verify at the owned safe
+boundary, or roll back exact hashes. No service restarts, unrelated modules,
+credentials or held runs change. Both Minis require their own actual rollout
+and readback. A held guest stays held; local tests or one guest's result cannot
+complete cross-machine acceptance. Keep incomplete work on its task branch until
+required actual acceptance and normal audited main integration are complete.
